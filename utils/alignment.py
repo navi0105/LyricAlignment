@@ -96,3 +96,14 @@ def get_mae(gt, predict):
 
     error = error / cnt
     return error
+
+def get_mae_v2(gt, predict):
+    error = 0.0
+    cnt = 0
+    for i in range(len(gt)):
+        for j in range(min(len(gt[i]), len(predict[i]))):
+            error = error + abs(gt[i][j][0] - predict[i][j][0]) + abs(gt[i][j][1] - predict[i][j][1])
+            cnt = cnt + 2.0
+
+    error = error / cnt
+    return error

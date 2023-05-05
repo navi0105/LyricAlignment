@@ -3,7 +3,7 @@ import json
 import argparse
 import random
 import numpy as np
-from typing import Iterator, Tuple
+from typing import Iterator, Tuple, Optional
 from tqdm import tqdm
 import copy
 from pathlib import Path
@@ -13,15 +13,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 import whisper
+from whisper.tokenizer import get_tokenizer
 from transformers import AutoTokenizer, get_linear_schedule_with_warmup
 
 from module.align_model import AlignModel
-from dataset import get_alignment_dataloader
-
-os.environ["TOKENIZERS_PARALLELISM"]="false"
+from dataset import get_transcript_dataloader
 
 def parse_args():
     parser = argparse.ArgumentParser()
+
     # Data Argument
     parser.add_argument(
         '--train-data',
@@ -32,7 +32,7 @@ def parse_args():
         '--dev-data',
         type=str
     )
-    
+
     # Model Argument
     parser.add_argument(
         '--whisper-model',
@@ -45,9 +45,20 @@ def parse_args():
         default='bert-base-chinese'
     )
     parser.add_argument(
+        '--language',
+        type=str,
+        default='zh'
+    )
+    parser.add_argument(
         '--device',
         type=str,
         default='cuda'
+    )
+    parser.add_argument(
+        '--align-model-dir',
+        type=str,
+        default=None,
+        help="use this argument for training existed alignment model"
     )
 
     # Training Argument
@@ -67,6 +78,10 @@ def parse_args():
         default=8
     )
     parser.add_argument(
+        '--no-timestamps',
+        action='store_true'
+    )
+    parser.add_argument(
         '--freeze-encoder',
         action='store_true'
     )
@@ -74,6 +89,11 @@ def parse_args():
         '--lr',
         type=float,
         default=1e-5
+    )
+    parser.add_argument(
+        '--fp16',
+        type=bool,
+        default=True
     )
     parser.add_argument(
         '--max-grad-norm',
@@ -112,7 +132,6 @@ def parse_args():
         default=114514
     )
 
-
     args = parser.parse_args()
     return args
 
@@ -137,12 +156,34 @@ def infinite_iter(data_loader: DataLoader) -> Iterator:
         for batch in data_loader:
             yield batch
 
+def load_align_model(
+    model_path: Optional[str],
+    whisper_model_name: str,
+    text_output_dim: int,
+    freeze_encoder: bool=False,
+    device: str='cuda'
+) -> AlignModel:
+    whisper_model = whisper.load_model(whisper_model_name, device=device)
+    
+    model = AlignModel(whisper_model=whisper_model,
+                       embed_dim=WHISPER_DIM[whisper_model_name],
+                       output_dim=text_output_dim,
+                       freeze_encoder=freeze_encoder,
+                       train_alignment=False,
+                       train_transcribe=True,
+                       device=device)
+    
+    if model_path is not None:
+        state_dict = torch.load(model_path, map_location=device)
+        model.load_state_dict(state_dict=state_dict)
+    
+    return model
+
 def train_step(
     model: AlignModel,
     train_iter: Iterator,
     optimizer: torch.optim.Optimizer, 
     scheduler: torch.optim.lr_scheduler.LambdaLR,
-    loss_fn,
     accum_grad_steps: int,
     max_grad_norm: float,
 ) -> Tuple[float, Iterator]:
@@ -151,19 +192,19 @@ def train_step(
 
     for _ in range(accum_grad_steps):
         # mel, y_text, frame_labels, lyric_word_onset_offset
-        mel, y_text, frame_labels, _ = next(train_iter)
-        mel, y_text, frame_labels = mel.to(model.device), y_text.to(model.device), frame_labels.to(model.device)
+        mel, y_in, y_out = next(train_iter)
+        mel, y_in, y_out = mel.to(model.device), y_in.to(model.device), y_out.to(model.device)
 
         # Align Logits Shape: [batch size, time length, number of classes] => (N, T, C)
         # align_logits, transcribe_logits
-        align_logits, _ = model(mel)
+        _, transcribe_logits = model(mel, y_in)
 
-        align_loss = compute_ce_loss(align_logits, frame_labels, loss_fn, model.device)
+        transcribe_loss = F.cross_entropy(transcribe_logits.permute(0, 2, 1), y_out)
 
-        loss = align_loss / accum_grad_steps
+        loss = transcribe_loss / accum_grad_steps
         loss.backward()
 
-        total_loss += align_loss.item() / accum_grad_steps
+        total_loss += transcribe_loss.item() / accum_grad_steps
 
     torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
     optimizer.step()
@@ -172,41 +213,29 @@ def train_step(
 
     return total_loss
 
-
 @torch.no_grad()
 def evaluate(
-    model: AlignModel,
-    dev_loader: DataLoader,
-    loss_fn
+    model: AlignModel, 
+    dev_loader: DataLoader
 ) -> float:
     model.eval()
     total_loss = 0
 
     # mel, y_text, frame_labels, lyric_word_onset_offset
-    for mel, y_text, frame_labels, _ in tqdm(dev_loader):
-        mel, y_text, frame_labels = mel.to(model.device), y_text.to(model.device), frame_labels.to(model.device)
-
-        # TODO: Add Whisper Evaluate
-        # Trainsribe Loss
+    for mel, y_in, y_out in tqdm(dev_loader):
+        mel, y_in, y_out = mel.to(model.device), y_in.to(model.device), y_out.to(model.device)
 
         # Align Logits Shape: [batch size, time length, number of classes] => (N, T, C)
         # align_logits, transcribe_logits
-        align_logits, _ = model(mel)
+        _, transcribe_logits = model(mel, y_in)
         
-        align_loss = compute_ce_loss(align_logits, frame_labels, loss_fn, model.device)
+        transcribe_loss = F.cross_entropy(transcribe_logits.permute(0, 2, 1), y_out)
 
-        total_loss += align_loss.item()
+        total_loss += transcribe_loss.item()
 
 
     total_loss /= len(dev_loader)
     return total_loss
-
-
-def save_model(model, save_path: str) -> None:
-    # save model in half precision to save space
-    #model = copy.deepcopy(model).half()
-    # save model weights and config in a dictionary that can be loaded with `whisper.load_model`
-    torch.save(model.state_dict(), save_path)
 
 def main_loop(
     model,
@@ -214,10 +243,9 @@ def main_loop(
     dev_loader: DataLoader,
     optimizer: torch.optim.Optimizer,
     scheduler: torch.optim.lr_scheduler.LambdaLR,
-    loss_fn,
     args: argparse.Namespace,
 ) -> None:
-    min_loss = evaluate(model, dev_loader, loss_fn)
+    min_loss = evaluate(model, dev_loader)
     avg_train_loss = 0
 
     print(f"Initial loss: {min_loss}")
@@ -229,7 +257,6 @@ def main_loop(
             train_iter,
             optimizer,
             scheduler,
-            loss_fn,
             args.accum_grad_steps,
             args.max_grad_norm,
         )
@@ -237,7 +264,7 @@ def main_loop(
         avg_train_loss += train_loss
 
         if step % args.eval_steps == 0:
-            eval_loss = evaluate(model, dev_loader, loss_fn)
+            eval_loss = evaluate(model, dev_loader)
 
             tqdm.write(f"Step {step}: valid loss={eval_loss}")
             tqdm.write(f"Step {step}: train loss={avg_train_loss / args.eval_steps}")
@@ -254,22 +281,11 @@ def main_loop(
 
             save_model(model, f"{args.save_dir}/last_model.pt")
 
-
-def compute_ce_loss(logits: torch.Tensor, 
-                    frame_labels: torch.Tensor, 
-                    ce_loss: nn.CrossEntropyLoss, 
-                    device) -> torch.Tensor:
-    frame_labels = frame_labels[:, : logits.shape[1]]
-    if frame_labels.shape[1] < logits.shape[1]:
-        frame_labels = torch.cat((frame_labels, 
-                                  torch.full((frame_labels.shape[0], logits.shape[1] - frame_labels.shape[1]), 
-                                             fill_value=0, 
-                                             device=device)), 
-                                  dim=1)
-        
-    loss = ce_loss(logits.permute(0, 2, 1), frame_labels)
-    return loss
-    
+def save_model(model, save_path: str) -> None:
+    # save model in half precision to save space
+    #model = copy.deepcopy(model).half()
+    # save model weights and config in a dictionary that can be loaded with `whisper.load_model`
+    torch.save(model.state_dict(), save_path)
 
 def main():
     args = parse_args()
@@ -278,55 +294,65 @@ def main():
     Path(args.save_dir).mkdir(parents=True, exist_ok=True)
     save_args(args, f"{args.save_dir}/args.json")
 
-
     device = args.device
     if 'cuda' in device and torch.cuda.is_available() == False:
         device = 'cpu'
 
-    whisper_model = whisper.load_model(args.whisper_model, device=device)
-    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
-
-    align_model = AlignModel(whisper_model=whisper_model,
-                             embed_dim=WHISPER_DIM[args.whisper_model],
-                             output_dim=len(tokenizer),
-                             freeze_encoder=args.freeze_encoder,
-                             train_alignment=True,
-                             device=device).to(device)
-    
-    if args.freeze_encoder:
-        optimizer = torch.optim.AdamW([{'params': align_model.align_rnn.parameters(), 'lr': args.lr}],
-                                        lr=args.lr,
-                                        weight_decay=2e-5)
+    if args.align_model_dir is not None:
+        assert os.path.exists(args.model_dir)
+        with open(os.path.join(args.model_dir, 'args.json'), 'r') as f:
+            model_args = json.load(f)
+        tokenizer_name = model_args['tokenizer']
+        whisper_model_name = model_args['whisper_model']
+        model_path = os.path.join(args.model_dir, 'best_model.pt')
     else:
-        optimizer = torch.optim.AdamW([{'params': align_model.align_rnn.parameters(), 'lr': args.lr,},
-                                       {'params': align_model.whisper_model.parameters(), 'lr': args.lr / 100}],
-                                        lr=args.lr,
-                                        weight_decay=2e-5)
+        tokenizer_name = args.tokenizer
+        whisper_model_name = args.whisper_model
+        model_path = None
+
+    hf_tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+    whisper_tokenizer = get_tokenizer(multilingual=".en" not in whisper_model_name, task="transcribe")
+    
+    model = load_align_model(model_path=model_path,
+                             whisper_model_name=whisper_model_name,
+                             text_output_dim=len(hf_tokenizer),
+                             freeze_encoder=args.freeze_encoder,
+                             device=device)
+    model.to(device)
+    # Move rnn to cpu for reduce Vram usage
+    model.align_rnn.to('cpu')
+
+    optimizer = torch.optim.AdamW(model.whisper_model.parameters(),
+                                  lr=args.lr,
+                                  weight_decay=2e-5)
+
 
     scheduler = scheduler = get_linear_schedule_with_warmup(
         optimizer, num_warmup_steps=args.warmup_steps, num_training_steps=args.train_steps
     )
 
-    assert os.path.exists(args.train_data)
-    train_dataloader = get_alignment_dataloader(data_path=args.train_data,
-                                                tokenizer=tokenizer,
-                                                batch_size=args.train_batch_size,
-                                                shuffle=True)
-    dev_dataloader = get_alignment_dataloader(data_path=args.dev_data,
-                                              tokenizer=tokenizer,
-                                              batch_size=args.dev_batch_size,
-                                              shuffle=False)
-
-
-    loss_fn = nn.CrossEntropyLoss()
-
+    train_dataloader = get_transcript_dataloader(data_path=args.train_data,
+                                                 tokenizer=whisper_tokenizer,
+                                                 language='zh',
+                                                 no_timestamps=args.no_timestamps,
+                                                 batch_size=args.train_batch_size,
+                                                 fp16=args.fp16,
+                                                 shuffle=True)
+    
+    dev_dataloader = get_transcript_dataloader(data_path=args.dev_data,
+                                                 tokenizer=whisper_tokenizer,
+                                                 language='zh',
+                                                 no_timestamps=args.no_timestamps,
+                                                 batch_size=args.dev_batch_size,
+                                                 fp16=args.fp16,
+                                                 shuffle=True)
+    
     main_loop(
-        model=align_model,
+        model=model,
         train_loader=train_dataloader,
         dev_loader=dev_dataloader,
         optimizer=optimizer,
         scheduler=scheduler,
-        loss_fn=loss_fn,
         args=args
     )
 

@@ -6,6 +6,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 from torch.nn.utils.rnn import pad_sequence
 
+from whisper.tokenizer import Tokenizer
 from whisper import log_mel_spectrogram, pad_or_trim
 from whisper.audio import N_FRAMES
 
@@ -80,7 +81,7 @@ class AlignmentDataset(Dataset):
         
         return x, y_text, frame_labels, lyric_word_onset_offset
 
-def get_dataloader(
+def get_alignment_dataloader(
     data_path: str,
     tokenizer,
     batch_size: int=1,
@@ -109,11 +110,154 @@ class TranscriptionDataset(Dataset):
     def __init__(
         self,
         records: List[Record],
-    ) -> None:
+        tokenizer: Tokenizer,
+        language: str='zh',
+        fp16: bool=True,
+        no_timestamps: bool=True
+    ):
         self.records = records
+        self.tokenizer = tokenizer
+        self.language = language
+        self.fp16 = fp16
+        self.no_timestamps = no_timestamps
+
+    def _calculate_mel(
+        self,
+        audio_path: str,
+    ) -> torch.Tensor:
+        mel = log_mel_spectrogram(audio_path)
+        mel = pad_or_trim(mel, N_FRAMES)
+        if self.fp16:
+            mel = mel.half()
+
+        return mel
+
+    def _get_special_tokens(
+            self, 
+            is_text_empty: bool, 
+            language: str, 
+            no_timestamps: bool
+    ) -> List[int]:
+        if is_text_empty:
+            special_tokens = [self.tokenizer.sot, self.tokenizer.no_speech]
+        else:
+            special_tokens = [
+                self.tokenizer.sot,
+                self.tokenizer.special_tokens[f"<|{language}|>"],
+                self.tokenizer.special_tokens["<|transcribe|>"],
+            ]
+            if no_timestamps:
+                special_tokens.append(self.tokenizer.no_timestamps)
+
+        return special_tokens
+
+    def _encode_text_with_timestamps(
+            self,
+            text: str,
+            lyric_onset_offset: List[List[float]]
+    ) -> List[int]:
+        # if len(text) != len(lyric_onset_offset):
+        #     print(text)
+        #     print(lyric_onset_offset)
+        
+        tokens = []
+        for i in range(len(lyric_onset_offset)):
+            onset = lyric_onset_offset[i][0]
+            offset = lyric_onset_offset[i][1]
+
+            if onset < 0 or onset > 30:
+                raise ValueError(f"Invalid timestamp: {onset}")
+            if offset < 0 or offset > 30:
+                raise ValueError(f"Invalid timestamp: {offset}")
+
+            start_token = self.tokenizer.timestamp_begin + (onset * 100 // 2)
+            end_token = self.tokenizer.timestamp_begin + (offset * 100 // 2)
+            char_token = self.tokenizer.encode(text[i])
+
+            tokens.append(start_token)
+            tokens.extend(char_token)
+            tokens.append(end_token)
+        
+        return tokens
+
+
+    def _get_text_tokens(
+            self,
+            record: Record,
+            no_timestmaps: bool
+    ) -> List[int]:
+        if no_timestmaps == False:
+            text_tokens = self._encode_text_with_timestamps(record.text, record.lyric_onset_offset)
+        else:
+            text_tokens = self.tokenizer.encode(record.text)
+
+        return text_tokens
+    
+    def _construct_decoder_output(
+        self,
+        special_tokens: List[int],
+        text_tokens: List[int]
+    ) -> List[int]:
+        decoder_output = special_tokens[1:] + text_tokens + [self.tokenizer.eot]
+        return decoder_output
 
     def __len__(self):
-        pass
+        return len(self.records)
     
     def __getitem__(self, index):
-        pass
+        record = self.records[index]
+        no_timestamps = self.no_timestamps
+
+        text_tokens = self._get_text_tokens(record, no_timestamps)
+        is_text_empty = len(text_tokens) == 0
+        special_tokens = self._get_special_tokens(is_text_empty, self.language, self.no_timestamps)
+
+        decoder_input = special_tokens + text_tokens
+        decoder_output = self._construct_decoder_output(special_tokens=special_tokens,
+                                                        text_tokens=text_tokens)
+        mel = self._calculate_mel(record.audio_path)
+
+        return (
+            mel,
+            torch.tensor(decoder_input, dtype=torch.long),
+            torch.tensor(decoder_output, dtype=torch.long)
+        )
+
+    def collate_fn(self, data):
+        x, y_in, y_out = zip(*data)
+        
+        x = pad_sequence(x, batch_first=True, padding_value=0)
+        y_in = pad_sequence(y_in, batch_first=True, padding_value=0)
+        y_out = pad_sequence(y_out, batch_first=True, padding_value=-100)
+        
+        return x, y_in, y_out
+    
+def get_transcript_dataloader(
+    data_path: str,
+    tokenizer: Tokenizer,
+    language: str='zh',
+    no_timestamps: bool=True,
+    batch_size: int=1,
+    fp16: bool=True,
+    shuffle: bool=False,
+) -> DataLoader:
+    assert os.path.exists(data_path)
+    if os.path.splitext(data_path)[-1] == '.csv':
+        records = read_data_from_csv(data_path)
+    else:
+        records = read_data_from_json(data_path)
+
+    dataset = TranscriptionDataset(records=records,
+                                   tokenizer=tokenizer,
+                                   language=language,
+                                   fp16=fp16,
+                                   no_timestamps=no_timestamps)
+    
+    return DataLoader(
+        dataset=dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=4,
+        collate_fn=dataset.collate_fn,
+        pin_memory=False
+    )

@@ -61,21 +61,27 @@ class AlignModel(torch.nn.Module):
 
         self.device = device
 
-    def forward(self, x):
+    def forward(self, x, y_in=None):
+        # x => Mel
+        # y_in => whisper decoder input
+        # You can ignore y_in if you are doing alignment task
         if self.freeze_encoder:
             with torch.no_grad():
                 embed = self.whisper_model.embed_audio(x)
         else:
             embed = self.whisper_model.embed_audio(x)
 
+        # Align Logit
         align_logit = None
         if self.train_alignment:
             align_logit = self.align_rnn(embed)
 
-        # TODO: Whisper Logit?
+        # Transcribe Logit
         transcribe_logit = None
         if self.train_transcribe:
-            transcribe_logit = None
+            assert y_in is not None
+            transcribe_logit = self.whisper_model.logits(tokens=y_in,
+                                                         audio_features=embed)
         
 
         return align_logit, transcribe_logit

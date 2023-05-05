@@ -68,7 +68,7 @@ def load_align_model(
                        device=device)
     
     if model_path is not None:
-        state_dict = torch.load(model_path)['model_state_dict']
+        state_dict = torch.load(model_path, map_location=device)
         model.load_state_dict(state_dict=state_dict)
     
     return model

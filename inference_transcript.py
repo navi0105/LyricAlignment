@@ -41,6 +41,10 @@ def parse_args():
         default=50
     )
     parser.add_argument(
+        '--get-timestamps',
+        action='store_true'
+    )
+    parser.add_argument(
         "--device",
         type=str,
         default="cuda",
@@ -60,6 +64,7 @@ def parse_args():
 def transcribe(
     model: whisper.Whisper,
     records: List[Record],
+    get_timestamps: bool=False,
     language: str='zh',
     beam_size: int=50
 ) -> List[dict]:
@@ -71,15 +76,20 @@ def transcribe(
         result = model.transcribe(audio=audio_path,
                                   task='transcribe',
                                   language=language,
-                                  beam_size=50)
+                                  beam_size=beam_size)
         
-        lyric_onset_offset = record.lyric_onset_offset
+        if get_timestamps:
+            lyric_onset_offset = record.lyric_onset_offset
 
-        inference_onset_offset = []
-        for segment in result['segments']:
-            inference_onset_offset.append([segment['start'], segment['end']])
+            inference_onset_offset = []
+            for segment in result['segments']:
+                inference_onset_offset.append([segment['start'], segment['end']])
+        else:
+            lyric_onset_offset = None
+            inference_onset_offset = []
 
-        transcribe_results.append({'lyric': record.text,
+        transcribe_results.append({'song_id': song_id,
+                                   'lyric': record.text,
                                    'inference': result['text'],
                                    'onset_offset': lyric_onset_offset,
                                    'inference_onset_offset': inference_onset_offset})
@@ -135,13 +145,14 @@ def main():
     transcribe_model.to(device)
 
     assert os.path.exists(args.test_data)
-    if os.path.splitext(args.test_data) == '.csv':
+    if os.path.splitext(args.test_data)[-1] == '.csv':
         test_records = read_data_from_csv(args.test_data)
     else:
         test_records = read_data_from_json(args.test_data)
     
     transcribe_results = transcribe(model=transcribe_model,
                                     records=test_records,
+                                    get_timestamps=args.get_timestamps,
                                     language=args.language,
                                     beam_size=args.beam_size)
     

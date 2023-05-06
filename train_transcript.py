@@ -291,30 +291,29 @@ def main():
     args = parse_args()
     set_seed(args.seed)
     torch.backends.cudnn.benchmark = False
-    Path(args.save_dir).mkdir(parents=True, exist_ok=True)
-    save_args(args, f"{args.save_dir}/args.json")
 
     device = args.device
     if 'cuda' in device and torch.cuda.is_available() == False:
         device = 'cpu'
 
     if args.align_model_dir is not None:
-        assert os.path.exists(args.model_dir)
-        with open(os.path.join(args.model_dir, 'args.json'), 'r') as f:
+        assert os.path.exists(args.align_model_dir)
+        with open(os.path.join(args.align_model_dir, 'args.json'), 'r') as f:
             model_args = json.load(f)
-        tokenizer_name = model_args['tokenizer']
-        whisper_model_name = model_args['whisper_model']
-        model_path = os.path.join(args.model_dir, 'best_model.pt')
+        args.tokenizer = model_args['tokenizer']
+        args.whisper_model = model_args['whisper_model']
+        model_path = os.path.join(args.align_model_dir, 'best_model.pt')
     else:
-        tokenizer_name = args.tokenizer
-        whisper_model_name = args.whisper_model
         model_path = None
 
-    hf_tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
-    whisper_tokenizer = get_tokenizer(multilingual=".en" not in whisper_model_name, task="transcribe")
+    Path(args.save_dir).mkdir(parents=True, exist_ok=True)
+    save_args(args, f"{args.save_dir}/args.json")
+
+    hf_tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
+    whisper_tokenizer = get_tokenizer(multilingual=".en" not in args.whisper_model, task="transcribe")
     
     model = load_align_model(model_path=model_path,
-                             whisper_model_name=whisper_model_name,
+                             whisper_model_name=args.whisper_model,
                              text_output_dim=len(hf_tokenizer),
                              freeze_encoder=args.freeze_encoder,
                              device=device)

@@ -17,6 +17,10 @@ def parse_args():
         help="Json file"
     )
     parser.add_argument(
+        '--evaluate-mae',
+        action='store_true'
+    )
+    parser.add_argument(
         "--ref-text-key",
         type=str,
         default='lyric',
@@ -88,9 +92,10 @@ def main():
     compute_cer(reference=[result[args.ref_text_key] for result in results],
                 prediction=[result[args.pred_text_key] for result in results])
     
-    avg_mae = get_mae_v2(gt=[result[args.ref_timestamp_key] for result in results],
-                         predict=[result[args.pred_timestamp_key] for result in results])
-    print("Average MAE:", avg_mae)
+    if args.evaluate_mae:
+        avg_mae = get_mae_v2(gt=[result[args.ref_timestamp_key] for result in results],
+                            predict=[result[args.pred_timestamp_key] for result in results])
+        print("Average MAE:", avg_mae)
 
 if __name__ == "__main__":
     main()

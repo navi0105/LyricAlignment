@@ -16,7 +16,7 @@ import whisper
 from transformers import AutoTokenizer, get_linear_schedule_with_warmup
 
 from module.align_model import AlignModel
-from dataset import get_dataloader
+from dataset import get_alignment_dataloader, get_transcript_dataloader
 from utils.alignment import perform_viterbi, get_mae
 
 os.environ["TOKENIZERS_PARALLELISM"]="false"
@@ -124,10 +124,10 @@ def main():
                              device=device)
     
     assert os.path.exists(args.test_data)
-    test_dataloader = get_dataloader(data_path=args.test_data,
-                                    tokenizer=tokenizer,
-                                    batch_size=args.batch_size,
-                                    shuffle=False)
+    test_dataloader = get_alignment_dataloader(data_path=args.test_data,
+                                                tokenizer=tokenizer,
+                                                batch_size=args.batch_size,
+                                                shuffle=False)
     
     align_and_evaluate(model=model,
                        test_dataloader=test_dataloader,

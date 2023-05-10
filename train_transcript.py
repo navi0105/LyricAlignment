@@ -321,7 +321,7 @@ def main():
     # Move rnn to cpu for reduce Vram usage
     model.align_rnn.to('cpu')
 
-    optimizer = torch.optim.AdamW(model.whisper_model.parameters(),
+    optimizer = torch.optim.Adam(model.whisper_model.parameters(),
                                   lr=args.lr,
                                   weight_decay=2e-5)
 

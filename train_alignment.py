@@ -220,6 +220,9 @@ def main_loop(
     min_loss = evaluate(model, dev_loader, loss_fn)
     avg_train_loss = 0
 
+    # Force Terminate if no_improve_count >= 3
+    no_improve_count = 0
+
     print(f"Initial loss: {min_loss}")
     pbar = tqdm(range(1, args.train_steps + 1))
     train_iter = infinite_iter(train_loader)
@@ -245,15 +248,24 @@ def main_loop(
             avg_train_loss = 0
         
             if eval_loss < min_loss:
+                # Reset no_improve_count
+                no_improve_count = 0
+                
                 min_loss = eval_loss
                 tqdm.write("Saving The Best Model")
                 save_model(model, f"{args.save_dir}/best_model.pt")
+            else:
+                no_improve_count += 1
+            
 
             if args.save_all_checkpoints:
                 save_model(model, f"{args.save_dir}/step{step}.pt")
 
             save_model(model, f"{args.save_dir}/last_model.pt")
 
+            if no_improve_count >= 5:
+                print("No improve, forced terminated.")
+                break
 
 def compute_ce_loss(logits: torch.Tensor, 
                     frame_labels: torch.Tensor, 

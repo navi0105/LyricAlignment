@@ -286,6 +286,8 @@ class MultitaskDataset(Dataset):
         mel = log_mel_spectrogram(audio_path)
         mel = pad_or_trim(mel, N_FRAMES)
 
+        return mel
+
     def _encode_align_text(
         self,
         text: str
@@ -337,7 +339,7 @@ class MultitaskDataset(Dataset):
         
         return tokens
 
-    def _get_text_tokens(
+    def _get_transcript_tokens(
             self,
             record: Record,
             no_timestmaps: bool
@@ -345,7 +347,7 @@ class MultitaskDataset(Dataset):
         if no_timestmaps == False:
             text_tokens = self._encode_text_with_timestamps(record.text, record.lyric_onset_offset)
         else:
-            text_tokens = self.tokenizer.encode(record.text)
+            text_tokens = self.whisper_tokenizer.encode(record.text)
 
         return text_tokens
 
@@ -354,7 +356,8 @@ class MultitaskDataset(Dataset):
         special_tokens: List[int],
         text_tokens: List[int]
     ) -> List[int]:
-        decoder_output = special_tokens[1:] + text_tokens + [self.tokenizer.eot]
+        decoder_output = special_tokens[1:] + text_tokens + [self.whisper_tokenizer.eot]
+
         return decoder_output
 
 
@@ -388,5 +391,74 @@ class MultitaskDataset(Dataset):
             torch.tensor(decoder_output, dtype=torch.long)
         )
     
+    def get_frame_label(
+        self, 
+        lyric_tokens, 
+        lyric_word_onset_offset, 
+        hop_size_second=0.02
+    ):
+        total_frame_num = max([lyric_word_onset_offset[i][-1][-1] for i in range(len(lyric_word_onset_offset))])
+        total_frame_num = int(round(total_frame_num / hop_size_second)) + 1
+
+        frame_labels = torch.full((len(lyric_word_onset_offset), total_frame_num), 0)
+
+        for i in range(len(lyric_word_onset_offset)):
+            for j in range(len(lyric_word_onset_offset[i])):
+                onset_frame = int(round(lyric_word_onset_offset[i][j][0] / hop_size_second))
+                offset_frame = int(round(lyric_word_onset_offset[i][j][1] / hop_size_second)) + 1
+                frame_labels[i][onset_frame: offset_frame] = lyric_tokens[i][j]
+
+        return frame_labels
+
     def collate_fn(self, data):
-        pass
+        mel, align_text, lyric_onset_offset, decoder_input, decoder_output = zip(*data)
+
+        mel = pad_sequence(mel, batch_first=True, padding_value=0)
+
+        # Align Token
+        align_text = pad_sequence(align_text, batch_first=True, padding_value=0)
+        align_text[align_text == 0] = -100
+        align_text[align_text == 102] == -100
+
+        frame_labels = self.get_frame_label(align_text, lyric_onset_offset)
+        
+        # Transcript Token
+        decoder_input = pad_sequence(decoder_input, batch_first=True, padding_value=0)
+        decoder_output = pad_sequence(decoder_output, batch_first=True, padding_value=-100)
+
+        return mel, align_text, frame_labels, lyric_onset_offset, decoder_input, decoder_output
+
+
+def get_multitask_dataloader(
+    *data_paths,
+    hf_tokenizer,
+    whisper_tokenizer: Tokenizer,
+    language: str='zh',
+    no_timestamps: bool=True,
+    batch_size: int=1,
+    shuffle: bool=False
+):
+    records = []
+    for path in data_paths:
+        assert os.path.exists(path)
+        if os.path.splitext(path)[-1] == '.csv':
+            records.extend(read_data_from_csv(path))
+        else:
+            records.extend(read_data_from_json(path))
+
+    dataset = MultitaskDataset(
+        records=records,
+        hf_tokenizer=hf_tokenizer,
+        whisper_tokenizer=whisper_tokenizer,
+        language=language,
+        no_timestamps=no_timestamps
+    )
+
+    return DataLoader(
+        dataset=dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        collate_fn=dataset.collate_fn,
+        num_workers=4,
+        pin_memory=False
+    )

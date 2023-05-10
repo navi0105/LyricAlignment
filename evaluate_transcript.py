@@ -4,6 +4,7 @@ import os
 import pandas as pd
 import json
 from typing import List
+from tqdm import tqdm
 
 from utils.CER import CER
 from utils.alignment import get_mae_v2
@@ -53,7 +54,7 @@ def compute_cer(
     op_count = {'substitution': 0,
                 'insertion': 0,
                 'deletion': 0}
-    for ref, pred in zip(reference, prediction):
+    for ref, pred in tqdm(zip(reference, prediction)):
         try:
             cer, nb_map = CER(hypothesis=list(pred),
                             reference=list(ref))

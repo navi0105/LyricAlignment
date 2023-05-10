@@ -2,7 +2,7 @@ align_train=${1}
 align_dev=${2}
 
 whipser_model=${3}
-align_model_dir=exp/230508_wm_opencpop_align
+align_model_dir=exp/230509_${whipser_model}_opencpop_align_2
 
 mkdir ${align_model_dir}
 cp ${0} ${align_model_dir}
@@ -16,10 +16,10 @@ python train_alignment.py \
     --train-batch-size 2 \
     --accum-grad-steps 8 \
     --dev-batch-size 8 \
-    --lr 5e-3 \
-    --train-steps 2000 \
+    --lr 1e-3 \
+    --train-steps 2500 \
     --eval-steps 100 \
-    --warmup-steps 200 \
+    --warmup-steps 250 \
     --save-dir ${align_model_dir}
 
 # Inference Alignment

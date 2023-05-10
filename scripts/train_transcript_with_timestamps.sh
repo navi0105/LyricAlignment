@@ -3,7 +3,7 @@ dev_data=${2}
 
 whisper_model=${3}
 
-model_dir=exp/230507_opencpop_trans_medium
+model_dir=exp/230508_${whipser_model}_opencpop_trans_with_timestamps
 
 mkdir -p ${model_dir}
 cp ${0} ${model_dir}
@@ -17,10 +17,10 @@ python train_transcript.py \
 	--train-batch-size 4 \
 	--dev-batch-size 8 \
 	--accum-grad-steps 4 \
-	--lr 3e-6 \
-	--train-steps 1500 \
+	--lr 5e-6 \
+	--train-steps 2500 \
 	--eval-steps 100 \
-	--warmup-steps 150 \
+	--warmup-steps 250 \
 	--freeze-encoder \
 	--save-dir ${model_dir}
 
@@ -34,4 +34,5 @@ python inference_transcript.py \
 	--output ${result_file}
 # Evaluate
 python evaluate_transcript.py \
-	-f ${result_file}
+	-f ${result_file} \
+	--evaluate-mae

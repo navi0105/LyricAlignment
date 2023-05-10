@@ -1,10 +1,11 @@
 align_train=${1}
 align_dev=${2}
+
 transcript_train=${3}
 transcript_dev=${4}
 
 whipser_model=${5}
-align_model_dir=exp/230508_${whipser_model}_opencpop_align
+align_model_dir=exp/230510_${whipser_model}_opencpop_align
 transcript_model_dir=${align_model_dir}_opensinger_trans_freeze_notime
 
 mkdir ${align_model_dir}
@@ -19,10 +20,10 @@ python train_alignment.py \
     --train-batch-size 2 \
     --accum-grad-steps 8 \
     --dev-batch-size 8 \
-    --lr 3e-3 \
-    --train-steps 2000 \
-    --eval-steps 100 \
-    --warmup-steps 150 \
+    --lr 1e-3 \
+    --train-steps 1250 \
+    --eval-steps 50 \
+    --warmup-steps 200 \
     --save-dir ${align_model_dir}
 
 mkdir ${transcript_model_dir}
@@ -34,13 +35,13 @@ python train_transcript.py \
     --dev-data ${transcript_dev} \
     --align-model-dir ${align_model_dir} \
     --device cuda \
-    --train-batch-size 2 \
+    --train-batch-size 4 \
     --accum-grad-steps 8 \
-    --dev-batch-size 8 \
-    --lr 5e-6 \
-    --train-steps 1500 \
+    --dev-batch-size 4 \
+    --lr 1e-5 \
+    --train-steps 2000 \
     --eval-steps 100 \
-    --warmup-steps 150 \
+    --warmup-steps 250 \
     --no-timestamps \
     --freeze-encoder \
     --save-dir ${transcript_model_dir}

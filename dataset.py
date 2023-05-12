@@ -371,7 +371,10 @@ class MultitaskDataset(Dataset):
         
         # Alignment Data
         align_text_tokens = self._encode_align_text(record.text)
-        lyric_onset_offset = record.lyric_onset_offset
+        if record.lyric_onset_offset is not None:     
+            lyric_onset_offset = record.lyric_onset_offset
+        else:
+            lyric_onset_offset = None
 
         # Transcription Data
         no_timestamps = self.no_timestamps
@@ -394,19 +397,35 @@ class MultitaskDataset(Dataset):
     def get_frame_label(
         self, 
         lyric_tokens, 
-        lyric_word_onset_offset, 
-        hop_size_second=0.02
+        lyric_word_onset_offset,
+        hop_size_second: float=0.2
+    ):
+        total_frame_num = int(round(lyric_word_onset_offset[-1][-1] / hop_size_second)) + 1
+        frame_labels = torch.full((total_frame_num,), -100)
+
+        for j in range(len(lyric_word_onset_offset)):
+            onset_frame = int(round(lyric_word_onset_offset[j][0] / hop_size_second))
+            offset_frame = int(round(lyric_word_onset_offset[j][1] / hop_size_second)) + 1
+            frame_labels[onset_frame:offset_frame] = lyric_tokens[j]
+
+        return frame_labels
+
+    def batch_get_frame_label(
+        self, 
+        lyric_tokens,
+        lyric_word_onset_offset,
+        hop_size_second: float=0.2
     ):
         total_frame_num = max([lyric_word_onset_offset[i][-1][-1] for i in range(len(lyric_word_onset_offset))])
         total_frame_num = int(round(total_frame_num / hop_size_second)) + 1
 
-        frame_labels = torch.full((len(lyric_word_onset_offset), total_frame_num), 0)
+        frame_labels = torch.full((len(lyric_word_onset_offset), total_frame_num), -100)
 
         for i in range(len(lyric_word_onset_offset)):
             for j in range(len(lyric_word_onset_offset[i])):
                 onset_frame = int(round(lyric_word_onset_offset[i][j][0] / hop_size_second))
                 offset_frame = int(round(lyric_word_onset_offset[i][j][1] / hop_size_second)) + 1
-                frame_labels[i][onset_frame: offset_frame] = lyric_tokens[i][j]
+                frame_labels[i][onset_frame:offset_frame] = lyric_tokens[i][j]
 
         return frame_labels
 
@@ -420,7 +439,13 @@ class MultitaskDataset(Dataset):
         align_text[align_text == 0] = -100
         align_text[align_text == 102] == -100
 
-        frame_labels = self.get_frame_label(align_text, lyric_onset_offset)
+        # frame_labels = []
+        # for i in range(len(data)):
+        #     if lyric_onset_offset[i] is not None:
+        #         frame_labels.append(self.get_frame_label(align_text[i], lyric_onset_offset[i]))
+        #     else:
+        #         frame_labels.append(None)
+        frame_labels = self.batch_get_frame_label(align_text, lyric_onset_offset)
         
         # Transcript Token
         decoder_input = pad_sequence(decoder_input, batch_first=True, padding_value=0)

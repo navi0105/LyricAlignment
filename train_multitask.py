@@ -77,6 +77,10 @@ def parse_args():
         action='store_true'
     )
     parser.add_argument(
+        '--use-ctc-loss',
+        action='store_true'
+    )
+    parser.add_argument(
         '--lr',
         type=float,
         default=1e-5
@@ -150,33 +154,47 @@ def train_step(
     scheduler: torch.optim.lr_scheduler.LambdaLR,
     accum_grad_steps: int,
     max_grad_norm: float,
+    use_ctc_loss: bool=False
 ):
     model.train()
+    
+    device = model.device
+
     total_loss = 0
-    total_align_loss = 0
+    total_align_ce_loss = 0
+    total_align_ctc_loss = 0
     total_transcript_loss = 0
     for _ in range(accum_grad_steps):
         # mel, y_text, frame_labels, lyric_word_onset_offset
         mel, align_text, frame_labels, _, decoder_input, decoder_output = next(train_iter)
-        mel = mel.to(model.device)
-        align_text = align_text.to(model.device)
-        frame_labels = frame_labels.to(model.device)
-        decoder_input = decoder_input.to(model.device)
-        decoder_output = decoder_output.to(model.device)
+        mel = mel.to(device)
+        align_text = align_text.to(device)
+        frame_labels = frame_labels.to(device)
+        decoder_input = decoder_input.to(device)
+        decoder_output = decoder_output.to(device)
 
         # Align Logits Shape: [batch size, time length, number of classes] => (N, T, C)
         # align_logits, transcribe_logits
         align_logits, transcript_logits = model(mel, decoder_input)
 
-        align_loss = compute_ce_loss(align_logits, frame_labels, model.device)
+        align_ce_loss = compute_ce_loss(align_logits, frame_labels, device)
+        if use_ctc_loss:
+            align_ctc_loss = compute_ctc_loss(align_logits, align_text, device)
+
         transcript_loss = F.cross_entropy(transcript_logits.permute(0, 2, 1), decoder_output)
 
 
-        loss = (align_loss + transcript_loss) / accum_grad_steps
+        loss = align_ce_loss + transcript_loss
+        if use_ctc_loss:
+            loss += align_ctc_loss
+        
+        loss /= accum_grad_steps
         loss.backward()
 
-        total_loss += (align_loss.item() + transcript_loss.item()) / accum_grad_steps
-        total_align_loss += align_loss.item() / accum_grad_steps
+        total_loss += loss.item()
+        total_align_ce_loss += align_ce_loss.item() / accum_grad_steps
+        if use_ctc_loss:
+            total_align_ctc_loss += align_ctc_loss.item() / accum_grad_steps
         total_transcript_loss += transcript_loss.item() / accum_grad_steps
 
     torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
@@ -184,17 +202,19 @@ def train_step(
     scheduler.step()
     optimizer.zero_grad()
 
-    return total_loss, total_align_loss, total_transcript_loss
+    return total_loss, total_align_ce_loss, total_align_ctc_loss, total_transcript_loss
 
 
 @torch.no_grad()
 def evaluate(
     model: AlignModel,
-    dev_loader: DataLoader
+    dev_loader: DataLoader,
+    use_ctc_loss: bool=False
 ):
     model.eval()
     total_loss = 0
-    total_align_loss = 0
+    total_align_ce_loss = 0
+    total_align_ctc_loss = 0
     total_transcript_loss = 0
 
     # mel, y_text, frame_labels, lyric_word_onset_offset
@@ -213,18 +233,30 @@ def evaluate(
         # align_logits, transcribe_logits
         align_logits, transcript_logits = model(mel, decoder_input)
 
-        align_loss = compute_ce_loss(align_logits, frame_labels, model.device)
+        align_ce_loss = compute_ce_loss(align_logits, frame_labels, model.device)
+        if use_ctc_loss:
+            align_ctc_loss = compute_ctc_loss(align_logits, align_text, model.device)
+
         transcript_loss = F.cross_entropy(transcript_logits.permute(0, 2, 1), decoder_output)
 
-        total_loss += (align_loss.item() + transcript_loss.item())
-        total_align_loss += align_loss.item()
+        total_loss += align_ce_loss.item() + transcript_loss.item()
+        if use_ctc_loss:
+            total_loss += align_ctc_loss
+
+        total_align_ce_loss += align_ce_loss.item()
+        if use_ctc_loss:
+            total_align_ctc_loss += align_ctc_loss.item()
+
         total_transcript_loss += transcript_loss.item()
 
 
     total_loss /= len(dev_loader)
-    total_align_loss /= len(dev_loader)
+    total_align_ce_loss /= len(dev_loader)
+    if use_ctc_loss:
+        total_align_ctc_loss /= len(dev_loader)
+
     total_transcript_loss /= len(dev_loader)
-    return total_loss, total_align_loss, total_transcript_loss
+    return total_loss, total_align_ce_loss, total_align_ctc_loss, total_transcript_loss
 
 
 def save_model(model, save_path: str) -> None:
@@ -241,40 +273,59 @@ def main_loop(
     scheduler: torch.optim.lr_scheduler.LambdaLR,
     args: argparse.Namespace,
 ) -> None:
-    min_loss, init_align_loss, init_transcript_loss = evaluate(model, dev_loader)
+    min_loss, init_align_loss, init_align_ctc_loss, init_transcript_loss = evaluate(model, dev_loader, args.use_ctc_loss)
     avg_train_loss = 0
-    avg_align_loss = 0
+    avg_align_ce_loss = 0
+    avg_align_ctc_loss = 0
     avg_transcript_loss = 0
     # Force Terminate if no_improve_count >= 5
     no_improve_count = 0
 
-    print(f"Initial loss: {min_loss}, Align loss: {init_align_loss}, Transcript loss: {init_transcript_loss}")
+    if args.use_ctc_loss:
+        print(f"Initial loss: {min_loss}, Align CE loss: {init_align_loss}, Align CTC loss: {init_align_ctc_loss}, Transcript loss: {init_transcript_loss}")
+    else:
+        print(f"Initial loss: {min_loss}, Align loss: {init_align_loss}, Transcript loss: {init_transcript_loss}")
+        
     pbar = tqdm(range(1, args.train_steps + 1))
     train_iter = infinite_iter(train_loader)
     for step in pbar:
-        train_loss, train_align_loss, train_transcript_loss = train_step(
+        train_loss, train_align_ce_loss, train_align_ctc_loss, train_transcript_loss = train_step(
             model,
             train_iter,
             optimizer,
             scheduler,
             args.accum_grad_steps,
             args.max_grad_norm,
+            args.use_ctc_loss
         )
-        pbar.set_postfix({"loss": train_loss,
-                          "align_loss": train_align_loss,
+        if args.use_ctc_loss:
+            pbar.set_postfix({"loss": train_loss,
+                          "align_ce_loss": train_align_ce_loss,
+                          "align_ctc_loss": train_align_ctc_loss,
                           "transcript_loss": train_transcript_loss})
+        else:
+            pbar.set_postfix({"loss": train_loss,
+                            "align_loss": train_align_ce_loss,
+                            "transcript_loss": train_transcript_loss})
+        
         avg_train_loss += train_loss
-        avg_align_loss += train_align_loss
+        avg_align_ce_loss += train_align_ce_loss
+        avg_align_ctc_loss += train_align_ctc_loss
         avg_transcript_loss += train_transcript_loss
 
         if step % args.eval_steps == 0:
-            eval_loss, eval_align_loss, eval_transcript_loss = evaluate(model, dev_loader)
+            eval_loss, eval_align_ce_loss, eval_align_ctc_loss, eval_transcript_loss = evaluate(model, dev_loader, args.use_ctc_loss)
 
-            tqdm.write(f"Step {step}: valid loss={eval_loss}, valid align loss={eval_align_loss}, valid transcript loss={eval_transcript_loss}")
-            tqdm.write(f"Step {step}: train align loss={avg_align_loss / args.eval_steps}, train loss={avg_train_loss / args.eval_steps}, train transcript loss={avg_transcript_loss / args.eval_steps}")
+            if args.use_ctc_loss:
+                tqdm.write(f"Step {step}: valid loss={eval_loss}, valid align CE loss={eval_align_ce_loss}, valid align CTC loss={eval_align_ctc_loss}, valid transcript loss={eval_transcript_loss}")
+                tqdm.write(f"Step {step}: train loss={avg_train_loss / args.eval_steps}, train align CE loss={avg_align_ce_loss / args.eval_steps}, train align CTC loss={avg_align_ctc_loss / args.eval_steps}, train transcript loss={avg_transcript_loss / args.eval_steps}")
+            else:
+                tqdm.write(f"Step {step}: valid loss={eval_loss}, valid align loss={eval_align_ce_loss}, valid transcript loss={eval_transcript_loss}")
+                tqdm.write(f"Step {step}: train loss={avg_train_loss / args.eval_steps}, train align loss={avg_align_ce_loss / args.eval_steps}, train transcript loss={avg_transcript_loss / args.eval_steps}")
             
             avg_train_loss = 0
-            avg_align_loss = 0
+            avg_align_ce_loss = 0
+            avg_align_ctc_loss = 0
             avg_transcript_loss = 0
         
             if eval_loss < min_loss:
@@ -297,9 +348,10 @@ def main_loop(
                 print("No improve, force terminated.")
                 break
 
-def compute_ce_loss(logits: torch.Tensor, 
-                    frame_labels: torch.Tensor,
-                    device) -> torch.Tensor:
+def compute_ce_loss(
+    logits: torch.Tensor, 
+    frame_labels: torch.Tensor,
+    device) -> torch.Tensor:
     frame_labels = frame_labels[:, : logits.shape[1]]
     if frame_labels.shape[1] < logits.shape[1]:
         frame_labels = torch.cat((frame_labels, 
@@ -311,6 +363,19 @@ def compute_ce_loss(logits: torch.Tensor,
     loss = F.cross_entropy(logits.permute(0, 2, 1), frame_labels)
     return loss
     
+def compute_ctc_loss(
+    logits,
+    labels,
+    device: str='cuda'
+):
+    logits_log_sm = F.log_softmax(logits, dim=2)
+
+    logit_lengths = torch.full(size=(logits_log_sm.shape[0], ), fill_value=logits_log_sm.shape[1], dtype=torch.long).to(device)
+    target_lengths = torch.sum(labels != -100, dim=1)
+
+    loss = F.ctc_loss(logits_log_sm.permute(1, 0, 2), labels, logit_lengths, target_lengths)
+    return loss
+
 
 def main():
     args = parse_args()

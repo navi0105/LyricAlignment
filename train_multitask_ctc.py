@@ -3,7 +3,7 @@ import json
 import argparse
 import random
 import numpy as np
-from typing import Iterator, Tuple
+from typing import Iterator, Tuple, Optional
 from tqdm import tqdm
 import copy
 from pathlib import Path
@@ -149,7 +149,8 @@ def train_step(
     optimizer: torch.optim.Optimizer, 
     scheduler: torch.optim.lr_scheduler.LambdaLR,
     accum_grad_steps: int,
-    max_grad_norm: float
+    max_grad_norm: float,
+    loss_fn: Optional[dict]=None
 ):
     model.train()
     
@@ -173,9 +174,17 @@ def train_step(
         # align_logits, transcribe_logits
         align_logits, transcript_logits = model(mel, decoder_input)
 
-        align_ce_loss = compute_ce_loss(align_logits, frame_labels, device=device)
-        align_ctc_loss = compute_ctc_loss(align_logits[:, :, : 21128], align_text, device)
+        # Align Cross Entropy
+        if loss_fn is not None and hasattr(loss_fn, 'ce_loss'):
+            align_ce_loss = compute_ce_loss(align_logits, frame_labels, device=device, ce_loss=loss_fn['ce_loss'])
+        else:
+            align_ce_loss = compute_ce_loss(align_logits, frame_labels, device=device)
 
+        # Align CTC
+        align_ctc_loss = compute_ctc_loss(align_logits, align_text, device)
+
+
+        # Transcript Cross Entropy
         transcript_loss = F.cross_entropy(transcript_logits.permute(0, 2, 1), decoder_output)
 
 
@@ -202,7 +211,8 @@ def train_step(
 @torch.no_grad()
 def evaluate(
     model: AlignModel,
-    dev_loader: DataLoader
+    dev_loader: DataLoader,
+    loss_fn: Optional[dict]=None,
 ):
     model.eval()
     total_loss = 0
@@ -227,9 +237,16 @@ def evaluate(
         # align_logits, transcribe_logits
         align_logits, transcript_logits = model(mel, decoder_input)
 
-        align_ce_loss = compute_ce_loss(align_logits, frame_labels, device=model.device)
-        align_ctc_loss = compute_ctc_loss(align_logits[:, :, : 21128], align_text, model.device)
+        # Align Cross Entropy
+        if loss_fn is not None and hasattr(loss_fn, 'ce_loss'):
+            align_ce_loss = compute_ce_loss(align_logits, frame_labels, device=model.device, ce_loss=loss_fn['ce_loss'])
+        else:
+            align_ce_loss = compute_ce_loss(align_logits, frame_labels, device=model.device)
 
+        # Align CTC
+        align_ctc_loss = compute_ctc_loss(align_logits, align_text, model.device)
+
+        # Transcript Cross Entropy
         transcript_loss = F.cross_entropy(transcript_logits.permute(0, 2, 1), decoder_output)
 
         total_loss += align_ce_loss.item() + transcript_loss.item()
@@ -262,8 +279,9 @@ def main_loop(
     optimizer: torch.optim.Optimizer,
     scheduler: torch.optim.lr_scheduler.LambdaLR,
     args: argparse.Namespace,
+    loss_fn: Optional[dict]=None
 ) -> None:
-    min_loss, init_align_loss, init_align_ctc_loss, init_transcript_loss = evaluate(model, dev_loader)
+    min_loss, init_align_loss, init_align_ctc_loss, init_transcript_loss = evaluate(model, dev_loader, loss_fn)
     avg_train_loss = 0
     avg_align_ce_loss = 0
     avg_align_ctc_loss = 0
@@ -295,7 +313,7 @@ def main_loop(
         avg_transcript_loss += train_transcript_loss
 
         if step % args.eval_steps == 0:
-            eval_loss, eval_align_ce_loss, eval_align_ctc_loss, eval_transcript_loss = evaluate(model, dev_loader)
+            eval_loss, eval_align_ce_loss, eval_align_ctc_loss, eval_transcript_loss = evaluate(model, dev_loader, loss_fn)
 
             tqdm.write(f"Step {step}: valid loss={eval_loss}, valid align CE loss={eval_align_ce_loss}, valid align CTC loss={eval_align_ctc_loss}, valid transcript loss={eval_transcript_loss}")
             tqdm.write(f"Step {step}: train loss={avg_train_loss / args.eval_steps}, train align CE loss={avg_align_ce_loss / args.eval_steps}, train align CTC loss={avg_align_ctc_loss / args.eval_steps}, train transcript loss={avg_transcript_loss / args.eval_steps}")
@@ -329,6 +347,7 @@ def compute_ce_loss(
     logits: torch.Tensor, 
     frame_labels: torch.Tensor,
     vocab_size: int=21128,
+    ce_loss=None,
     device: str='cuda') -> torch.Tensor:
     frame_labels = frame_labels[:, : logits.shape[1]]
     if frame_labels.shape[1] < logits.shape[1]:
@@ -340,12 +359,15 @@ def compute_ce_loss(
         
     # loss = F.cross_entropy(logits.permute(0, 2, 1), frame_labels)
     frame_labels[frame_labels != -100] = 1
-    word_loss = F.cross_entropy(logits[:, :, 1:vocab_size].permute(0, 2, 1), frame_labels)
+    if ce_loss is not None:
+        word_loss = ce_loss(logits[:, :, 1:vocab_size].permute(0, 2, 1), frame_labels)
+    else:
+        word_loss = F.cross_entropy(logits[:, :, 1:vocab_size].permute(0, 2, 1), frame_labels)
 
     silence_labels = torch.where(frame_labels == -100, 1, 0)
     silence_loss = F.binary_cross_entropy_with_logits(logits[:, :, vocab_size], silence_labels.float())
 
-    return word_loss + silence_loss
+    return word_loss + silence_loss 
     
 def compute_ctc_loss(
     logits,
@@ -396,7 +418,7 @@ def main():
     )
 
     assert os.path.exists(args.train_data)
-    train_dataloader = get_multitask_dataloader(
+    train_dataloader, ce_weights = get_multitask_dataloader(
         args.train_data,
         hf_tokenizer=hf_tokenizer,
         whisper_tokenizer=whisper_tokenizer,
@@ -405,7 +427,7 @@ def main():
         batch_size=args.train_batch_size,
         shuffle=True
     )
-    dev_dataloader = get_multitask_dataloader(
+    dev_dataloader, _ = get_multitask_dataloader(
         args.dev_data,
         hf_tokenizer=hf_tokenizer,
         whisper_tokenizer=whisper_tokenizer,
@@ -415,12 +437,19 @@ def main():
         shuffle=False
     )
 
+    loss_fn = {}
+    # ce_weights
+    ce_weights = ce_weights[1:]
+    ce_loss = nn.CrossEntropyLoss(weight=ce_weights)
+    loss_fn['ce'] = ce_loss
+
     main_loop(
         model=multitask_model,
         train_loader=train_dataloader,
         dev_loader=dev_dataloader,
         optimizer=optimizer,
         scheduler=scheduler,
+        loss_fn=loss_fn,
         args=args
     )
 

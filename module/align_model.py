@@ -21,13 +21,18 @@ class RNN(nn.Module):
                             dropout=dropout,
                             batch_first=batch_first,
                             bidirectional=bidirectional)
-        self.relu = nn.Mish()
+        
+        self.ln = nn.LayerNorm(hidden_size + (bidirectional * hidden_size))
+
+        self.activate = nn.Mish()
+
         self.fc = nn.Linear(hidden_size + (bidirectional * hidden_size), 
                             output_size + 1)
 
     def forward(self, x):
         out, _ = self.rnn(x)
-        out = self.relu(out)
+        out = self.ln(out)
+        out = self.activate(out)
         out = self.fc(out)
 
         return out
@@ -36,7 +41,7 @@ class AlignModel(torch.nn.Module):
     def __init__(self,
         whisper_model: whisper.Whisper,
         embed_dim: int=1280,
-        hidden_dim: int=512,
+        hidden_dim: int=384,
         dropout: float=0.2,
         output_dim: int=10000,
         freeze_encoder: bool=False,

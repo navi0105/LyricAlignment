@@ -360,7 +360,6 @@ class MultitaskDataset(Dataset):
 
         return decoder_output
 
-
     def __len__(self):
         return len(self.records)
     
@@ -370,7 +369,7 @@ class MultitaskDataset(Dataset):
         mel = self._calculate_mel(record.audio_path)
         
         # Alignment Data
-        align_text_tokens = self._encode_align_text(record.text)
+        align_text = record.text
         if record.lyric_onset_offset is not None:     
             lyric_onset_offset = record.lyric_onset_offset
         else:
@@ -388,7 +387,7 @@ class MultitaskDataset(Dataset):
         
         return (
             mel,
-            align_text_tokens,
+            align_text,
             lyric_onset_offset,
             torch.tensor(decoder_input, dtype=torch.long),
             torch.tensor(decoder_output, dtype=torch.long)
@@ -409,6 +408,30 @@ class MultitaskDataset(Dataset):
             frame_labels[onset_frame:offset_frame] = lyric_tokens[j]
 
         return frame_labels
+
+    def compute_weight(self):
+        freq = torch.full((len(self.hf_tokenizer),), 0.001)
+        for i in range(len(self.records)):
+
+            if not hasattr(self.records[i], "lyric_onset_offset"):
+                continue
+
+            target_transcription = [self.records[i].text]
+            labels = self.hf_tokenizer(target_transcription, padding=True, return_tensors="pt").input_ids[:,1:]
+
+            labels[labels == 0] = -100
+            labels[labels == 102] = -100
+
+            lyric_word_onset_offset = [self.records[i].lyric_onset_offset]
+            frame_labels = self.batch_get_frame_label(labels, lyric_word_onset_offset)
+
+            for j in range(len(frame_labels)):
+                for k in range(len(frame_labels[j])):
+                    freq[int(frame_labels[j][k])] += 1
+
+        freq = freq / torch.sum(freq)
+
+        return 1.0 / freq
 
     def batch_get_frame_label(
         self, 
@@ -435,9 +458,10 @@ class MultitaskDataset(Dataset):
         mel = pad_sequence(mel, batch_first=True, padding_value=0)
 
         # Align Token
-        align_text = pad_sequence(align_text, batch_first=True, padding_value=0)
-        align_text[align_text == 0] = -100
-        align_text[align_text == 102] == -100
+        align_text_tokens = self.hf_tokenizer(align_text, padding=True, return_tensors='pt').input_ids[:, 1:]
+        # align_text = pad_sequence(align_text, batch_first=True, padding_value=0)
+        align_text_tokens[align_text == 0] = -100
+        align_text_tokens[align_text == 102] == -100
 
         # frame_labels = []
         # for i in range(len(data)):
@@ -445,13 +469,13 @@ class MultitaskDataset(Dataset):
         #         frame_labels.append(self.get_frame_label(align_text[i], lyric_onset_offset[i]))
         #     else:
         #         frame_labels.append(None)
-        frame_labels = self.batch_get_frame_label(align_text, lyric_onset_offset)
+        frame_labels = self.batch_get_frame_label(align_text_tokens, lyric_onset_offset)
         
         # Transcript Token
         decoder_input = pad_sequence(decoder_input, batch_first=True, padding_value=0)
         decoder_output = pad_sequence(decoder_output, batch_first=True, padding_value=-100)
 
-        return mel, align_text, frame_labels, lyric_onset_offset, decoder_input, decoder_output
+        return mel, align_text_tokens, frame_labels, lyric_onset_offset, decoder_input, decoder_output
 
 
 def get_multitask_dataloader(
@@ -479,11 +503,16 @@ def get_multitask_dataloader(
         no_timestamps=no_timestamps
     )
 
-    return DataLoader(
-        dataset=dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        collate_fn=dataset.collate_fn,
-        num_workers=4,
-        pin_memory=False
+    ce_weights = dataset.compute_weight()
+
+    return (
+        DataLoader(
+            dataset=dataset,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            collate_fn=dataset.collate_fn,
+            num_workers=4,
+            pin_memory=False
+        ),
+        ce_weights
     )

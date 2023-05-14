@@ -17,7 +17,7 @@ from transformers import AutoTokenizer, get_linear_schedule_with_warmup
 
 from module.align_model import AlignModel
 from dataset import get_alignment_dataloader, get_transcript_dataloader
-from utils.alignment import perform_viterbi, get_mae
+from utils.alignment import perform_viterbi, perform_viterbi_sil, get_mae
 
 os.environ["TOKENIZERS_PARALLELISM"]="false"
 
@@ -40,9 +40,18 @@ def parse_args():
         default=16
     )
     parser.add_argument(
+        '--predict-sil',
+        action='store_true'
+    )
+    parser.add_argument(
         '--device',
         type=str,
         default='cuda'
+    )
+    parser.add_argument(
+        '--seed',
+        type=int,
+        default=114514
     )
 
     args = parser.parse_args()
@@ -54,6 +63,12 @@ whisper_dim = {'tiny': 384,
                'small': 768,
                'medium': 1024,
                'large': 1280}
+
+def set_seed(seed: int):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
 
 def load_align_model(
     model_path: Optional[str],
@@ -76,6 +91,7 @@ def load_align_model(
 @torch.no_grad()
 def align_and_evaluate(model: AlignModel, 
                        test_dataloader: DataLoader, 
+                       predict_sil: bool=False,
                        device: str='cuda'):
     total_mae = 0
     model.eval()
@@ -87,7 +103,10 @@ def align_and_evaluate(model: AlignModel,
 
         align_logits, _ = model(mel)
 
-        align_results = perform_viterbi(align_logits, tokens)
+        if predict_sil:
+            align_results = perform_viterbi_sil(align_logits, tokens)
+        else:
+            align_results = perform_viterbi(align_logits, tokens)
         mae = get_mae(lyric_word_onset_offset, align_results)
         pbar.set_postfix({"current MAE": mae})
 
@@ -99,6 +118,8 @@ def align_and_evaluate(model: AlignModel,
 
 def main():
     args = parse_args()
+
+    set_seed(args.seed)
 
     device = args.device
     if 'cuda' in device and torch.cuda.is_available() == False:
@@ -131,6 +152,7 @@ def main():
     
     align_and_evaluate(model=model,
                        test_dataloader=test_dataloader,
+                       predict_sil=args.predict_sil,
                        device=device)
 
 

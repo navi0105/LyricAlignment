@@ -10,7 +10,7 @@ class RNN(nn.Module):
         hidden_size,
         output_size,
         num_layers: int=2,
-        dropout: float=0.25,
+        dropout: float=0.1,
         batch_first: bool=True, 
         bidirectional: bool=True,
     ) -> None:
@@ -23,7 +23,7 @@ class RNN(nn.Module):
                             bidirectional=bidirectional)
         self.relu = nn.Mish()
         self.fc = nn.Linear(hidden_size + (bidirectional * hidden_size), 
-                            output_size)
+                            output_size + 1)
 
     def forward(self, x):
         out, _ = self.rnn(x)
@@ -36,7 +36,7 @@ class AlignModel(torch.nn.Module):
     def __init__(self,
         whisper_model: whisper.Whisper,
         embed_dim: int=1280,
-        hidden_dim: int=384,
+        hidden_dim: int=512,
         dropout: float=0.2,
         output_dim: int=10000,
         freeze_encoder: bool=False,

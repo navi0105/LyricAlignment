@@ -77,10 +77,6 @@ def parse_args():
         action='store_true'
     )
     parser.add_argument(
-        '--use-ctc-loss',
-        action='store_true'
-    )
-    parser.add_argument(
         '--lr',
         type=float,
         default=1e-5
@@ -153,8 +149,7 @@ def train_step(
     optimizer: torch.optim.Optimizer, 
     scheduler: torch.optim.lr_scheduler.LambdaLR,
     accum_grad_steps: int,
-    max_grad_norm: float,
-    use_ctc_loss: bool=False
+    max_grad_norm: float
 ):
     model.train()
     
@@ -179,23 +174,20 @@ def train_step(
         align_logits, transcript_logits = model(mel, decoder_input)
 
         align_ce_loss = compute_ce_loss(align_logits, frame_labels, device=device)
-        if use_ctc_loss:
-            align_ctc_loss = compute_ctc_loss(align_logits[:, :, : 21128], align_text, device)
+        align_ctc_loss = compute_ctc_loss(align_logits[:, :, : 21128], align_text, device)
 
         transcript_loss = F.cross_entropy(transcript_logits.permute(0, 2, 1), decoder_output)
 
 
         loss = align_ce_loss + transcript_loss
-        if use_ctc_loss:
-            loss += align_ctc_loss
+        loss += align_ctc_loss
         
         loss /= accum_grad_steps
         loss.backward()
 
         total_loss += loss.item()
         total_align_ce_loss += align_ce_loss.item() / accum_grad_steps
-        if use_ctc_loss:
-            total_align_ctc_loss += align_ctc_loss.item() / accum_grad_steps
+        total_align_ctc_loss += align_ctc_loss.item() / accum_grad_steps
             
         total_transcript_loss += transcript_loss.item() / accum_grad_steps
 
@@ -210,8 +202,7 @@ def train_step(
 @torch.no_grad()
 def evaluate(
     model: AlignModel,
-    dev_loader: DataLoader,
-    use_ctc_loss: bool=False
+    dev_loader: DataLoader
 ):
     model.eval()
     total_loss = 0
@@ -237,26 +228,22 @@ def evaluate(
         align_logits, transcript_logits = model(mel, decoder_input)
 
         align_ce_loss = compute_ce_loss(align_logits, frame_labels, device=model.device)
-        if use_ctc_loss:
-            align_ctc_loss = compute_ctc_loss(align_logits[:, :, : 21128], align_text, model.device)
+        align_ctc_loss = compute_ctc_loss(align_logits[:, :, : 21128], align_text, model.device)
 
         transcript_loss = F.cross_entropy(transcript_logits.permute(0, 2, 1), decoder_output)
 
         total_loss += align_ce_loss.item() + transcript_loss.item()
-        if use_ctc_loss:
-            total_loss += align_ctc_loss
+        total_loss += align_ctc_loss
 
         total_align_ce_loss += align_ce_loss.item()
-        if use_ctc_loss:
-            total_align_ctc_loss += align_ctc_loss.item()
+        total_align_ctc_loss += align_ctc_loss.item()
 
         total_transcript_loss += transcript_loss.item()
 
 
     total_loss /= len(dev_loader)
     total_align_ce_loss /= len(dev_loader)
-    if use_ctc_loss:
-        total_align_ctc_loss /= len(dev_loader)
+    total_align_ctc_loss /= len(dev_loader)
 
     total_transcript_loss /= len(dev_loader)
     return total_loss, total_align_ce_loss, total_align_ctc_loss, total_transcript_loss
@@ -276,7 +263,7 @@ def main_loop(
     scheduler: torch.optim.lr_scheduler.LambdaLR,
     args: argparse.Namespace,
 ) -> None:
-    min_loss, init_align_loss, init_align_ctc_loss, init_transcript_loss = evaluate(model, dev_loader, args.use_ctc_loss)
+    min_loss, init_align_loss, init_align_ctc_loss, init_transcript_loss = evaluate(model, dev_loader)
     avg_train_loss = 0
     avg_align_ce_loss = 0
     avg_align_ctc_loss = 0
@@ -284,10 +271,7 @@ def main_loop(
     # Force Terminate if no_improve_count >= 5
     no_improve_count = 0
 
-    if args.use_ctc_loss:
-        print(f"Initial loss: {min_loss}, Align CE loss: {init_align_loss}, Align CTC loss: {init_align_ctc_loss}, Transcript loss: {init_transcript_loss}")
-    else:
-        print(f"Initial loss: {min_loss}, Align loss: {init_align_loss}, Transcript loss: {init_transcript_loss}")
+    print(f"Initial loss: {min_loss}, Align CE loss: {init_align_loss}, Align CTC loss: {init_align_ctc_loss}, Transcript loss: {init_transcript_loss}")
         
     pbar = tqdm(range(1, args.train_steps + 1))
     train_iter = infinite_iter(train_loader)
@@ -298,18 +282,12 @@ def main_loop(
             optimizer,
             scheduler,
             args.accum_grad_steps,
-            args.max_grad_norm,
-            args.use_ctc_loss
+            args.max_grad_norm
         )
-        if args.use_ctc_loss:
-            pbar.set_postfix({"loss": train_loss,
+        pbar.set_postfix({"loss": train_loss,
                           "align_ce_loss": train_align_ce_loss,
                           "align_ctc_loss": train_align_ctc_loss,
                           "transcript_loss": train_transcript_loss})
-        else:
-            pbar.set_postfix({"loss": train_loss,
-                            "align_loss": train_align_ce_loss,
-                            "transcript_loss": train_transcript_loss})
         
         avg_train_loss += train_loss
         avg_align_ce_loss += train_align_ce_loss
@@ -317,14 +295,10 @@ def main_loop(
         avg_transcript_loss += train_transcript_loss
 
         if step % args.eval_steps == 0:
-            eval_loss, eval_align_ce_loss, eval_align_ctc_loss, eval_transcript_loss = evaluate(model, dev_loader, args.use_ctc_loss)
+            eval_loss, eval_align_ce_loss, eval_align_ctc_loss, eval_transcript_loss = evaluate(model, dev_loader)
 
-            if args.use_ctc_loss:
-                tqdm.write(f"Step {step}: valid loss={eval_loss}, valid align CE loss={eval_align_ce_loss}, valid align CTC loss={eval_align_ctc_loss}, valid transcript loss={eval_transcript_loss}")
-                tqdm.write(f"Step {step}: train loss={avg_train_loss / args.eval_steps}, train align CE loss={avg_align_ce_loss / args.eval_steps}, train align CTC loss={avg_align_ctc_loss / args.eval_steps}, train transcript loss={avg_transcript_loss / args.eval_steps}")
-            else:
-                tqdm.write(f"Step {step}: valid loss={eval_loss}, valid align loss={eval_align_ce_loss}, valid transcript loss={eval_transcript_loss}")
-                tqdm.write(f"Step {step}: train loss={avg_train_loss / args.eval_steps}, train align loss={avg_align_ce_loss / args.eval_steps}, train transcript loss={avg_transcript_loss / args.eval_steps}")
+            tqdm.write(f"Step {step}: valid loss={eval_loss}, valid align CE loss={eval_align_ce_loss}, valid align CTC loss={eval_align_ctc_loss}, valid transcript loss={eval_transcript_loss}")
+            tqdm.write(f"Step {step}: train loss={avg_train_loss / args.eval_steps}, train align CE loss={avg_align_ce_loss / args.eval_steps}, train align CTC loss={avg_align_ctc_loss / args.eval_steps}, train transcript loss={avg_transcript_loss / args.eval_steps}")
             
             avg_train_loss = 0
             avg_align_ce_loss = 0

@@ -398,7 +398,7 @@ class MultitaskDataset(Dataset):
         self, 
         lyric_tokens, 
         lyric_word_onset_offset,
-        hop_size_second: float=0.2
+        hop_size_second: float=0.02
     ):
         total_frame_num = int(round(lyric_word_onset_offset[-1][-1] / hop_size_second)) + 1
         frame_labels = torch.full((total_frame_num,), -100)
@@ -414,18 +414,18 @@ class MultitaskDataset(Dataset):
         self, 
         lyric_tokens,
         lyric_word_onset_offset,
-        hop_size_second: float=0.2
+        hop_size_second: float=0.02
     ):
         total_frame_num = max([lyric_word_onset_offset[i][-1][-1] for i in range(len(lyric_word_onset_offset))])
         total_frame_num = int(round(total_frame_num / hop_size_second)) + 1
 
-        frame_labels = torch.full((len(lyric_word_onset_offset), total_frame_num), -100)
+        frame_labels = torch.full((len(lyric_word_onset_offset), total_frame_num), 0)
 
         for i in range(len(lyric_word_onset_offset)):
             for j in range(len(lyric_word_onset_offset[i])):
                 onset_frame = int(round(lyric_word_onset_offset[i][j][0] / hop_size_second))
                 offset_frame = int(round(lyric_word_onset_offset[i][j][1] / hop_size_second)) + 1
-                frame_labels[i][onset_frame:offset_frame] = lyric_tokens[i][j]
+                frame_labels[i][onset_frame: offset_frame] = lyric_tokens[i][j]
 
         return frame_labels
 

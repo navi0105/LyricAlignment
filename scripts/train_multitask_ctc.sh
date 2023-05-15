@@ -12,11 +12,12 @@ mkdir -p ${multitask_model_dir}
 cp ${0} ${multitask_model_dir}
 
 # Train multitask
-python train_multitask_ctc.py \
+python train_multitask.py \
     --train-data ${multitask_train} \
     --dev-data ${multitask_dev} \
     --whisper-model ${whipser_model} \
     --device cuda \
+    --use-ctc-loss \
     --train-batch-size 2 \
     --dev-batch-size 8 \
     --accum-grad-steps 8 \
@@ -45,7 +46,9 @@ python inference_transcript.py \
 # Evaluate
 python inference_align.py \
     -f ${multitask_dev} \
-    --model-dir ${multitask_model_dir}
+    --model-dir ${multitask_model_dir} \
+    --predict-sil \
+    --use-pypinyin
 
 python evaluate_transcript.py \
     -f ${result_1}

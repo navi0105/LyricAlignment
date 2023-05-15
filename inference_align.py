@@ -7,6 +7,7 @@ from typing import Iterator, Tuple, Optional
 from tqdm import tqdm
 import copy
 from pathlib import Path
+from pypinyin import lazy_pinyin, Style
 
 import torch
 import torch.nn as nn
@@ -44,6 +45,10 @@ def parse_args():
         action='store_true'
     )
     parser.add_argument(
+        '--use-pypinyin',
+        action='store_true'
+    )
+    parser.add_argument(
         '--device',
         type=str,
         default='cuda'
@@ -56,7 +61,6 @@ def parse_args():
 
     args = parser.parse_args()
     return args
-
 
 whisper_dim = {'tiny': 384,
                'base': 512,
@@ -88,20 +92,98 @@ def load_align_model(
     
     return model
 
+def get_pinyin_table(tokenizer):
+    def handle_error(chars):
+        return ['bad', 'bad']
+
+    tokens = tokenizer.convert_ids_to_tokens(np.arange(0, len(tokenizer), 1).astype(int))
+    # print (tokens)
+    token_pinyin = []
+    pinyin_reverse = {}
+    for i in range(len(tokens)):
+        try:
+            cur_pinyin = lazy_pinyin(tokens[i], style=Style.NORMAL, errors=handle_error)
+        except:
+            cur_pinyin = ['bad', 'bad']
+        if len(cur_pinyin) == 1:
+            token_pinyin.append(cur_pinyin[0])
+            if cur_pinyin[0] not in pinyin_reverse.keys():
+                pinyin_reverse[cur_pinyin[0]] = [i,]
+            else:
+                pinyin_reverse[cur_pinyin[0]].append(i)
+        else:
+            token_pinyin.append('bad')
+
+    return token_pinyin, pinyin_reverse
+
+def pypinyin_reweight(
+    logits: torch.Tensor,
+    labels,
+    token_pinyin,
+    pinyin_reverse,
+):
+    pinyin_reverse_keys = list(pinyin_reverse.keys())
+
+    cur_same_pronun_token = []
+    for k in range(len(pinyin_reverse_keys)):
+        cur_same_pronun_token.append(torch.tensor(pinyin_reverse[pinyin_reverse_keys[k]]))
+
+    for i in range(len(logits)):
+
+        effective_pronun = []
+        for k in range(len(labels[i])):
+            # print(labels[i][k])
+            if labels[i][k] == -100:
+                continue
+
+            # print (labels[i][k], token_pinyin[labels[i][k]])
+            cur_key = token_pinyin[labels[i][k]]
+            cur_key_index = pinyin_reverse_keys.index(cur_key)
+            if cur_key_index not in effective_pronun:
+                effective_pronun.append(cur_key_index)
+
+        for j in range(len(logits[i])):
+            cur_frame_best = torch.max(logits[i][j])
+            # for k in range(len(pinyin_reverse_keys)):
+            for k in effective_pronun:
+                # selected = torch.index_select(logits[i][j], dim=0, index=cur_same_pronun_token[k])
+                cur_value_list = cur_same_pronun_token[k]
+                selected = logits[i][j][cur_value_list]
+                # print (selected.shape)
+                cur_max = torch.max(selected)
+
+                logits[i][j][cur_value_list] = (cur_max + logits[i][j][cur_value_list]) / 2.0
+
+    return logits
+
 @torch.no_grad()
-def align_and_evaluate(model: AlignModel, 
-                       test_dataloader: DataLoader, 
-                       predict_sil: bool=False,
-                       device: str='cuda'):
+def align_and_evaluate(
+    model: AlignModel,
+    tokenizer,
+    test_dataloader: DataLoader, 
+    predict_sil: bool=False,
+    use_pypinyin: bool=False,
+    device: str='cuda'
+):
     total_mae = 0
     model.eval()
     model.to(device)
     pbar = tqdm(test_dataloader)
+
+    if use_pypinyin:
+        print('Use Pypinyin to reweight, building pinyin table...')
+        token_pinyin, pinyin_reverse = get_pinyin_table(tokenizer)
+        print('Done.')
+
     for batch in pbar:
         mel, tokens, _, lyric_word_onset_offset = batch
-        mel, tokens = mel.to(device), tokens.to(device)
+        mel = mel.to(device)
 
         align_logits, _ = model(mel)
+
+        align_logits = align_logits.cpu()
+        if use_pypinyin:
+            align_logits = pypinyin_reweight(align_logits, tokens, token_pinyin, pinyin_reverse)
 
         if predict_sil:
             align_results = perform_viterbi_sil(align_logits, tokens)
@@ -141,7 +223,7 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
     model = load_align_model(model_path=model_path,
                              whisper_model_name=whisper_model_name,
-                             text_output_dim=len(tokenizer),
+                             text_output_dim=len(tokenizer) + args.predict_sil,
                              device=device)
     
     assert os.path.exists(args.test_data)
@@ -151,8 +233,10 @@ def main():
                                                 shuffle=False)
     
     align_and_evaluate(model=model,
+                       tokenizer=tokenizer,
                        test_dataloader=test_dataloader,
                        predict_sil=args.predict_sil,
+                       use_pypinyin=args.use_pypinyin,
                        device=device)
 
 

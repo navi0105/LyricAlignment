@@ -1,10 +1,8 @@
-multitask_train=${1}
-multitask_dev=${2}
+multitask_dev=${1}
 
-transcript_train=${3}
-transcript_dev=${4}
+transcript_dev=${2}
 
-multitask_model_dir=${5}
+multitask_model_dir=${3}
 
 # Inference Transcript
 result_1=${multitask_model_dir}/result_opencpop_test.json
@@ -25,7 +23,9 @@ python inference_transcript.py \
 # Evaluate
 python inference_align.py \
     -f ${multitask_dev} \
-    --model-dir ${multitask_model_dir}
+    --model-dir ${multitask_model_dir} \
+    --predict-sil \
+    --use-pypinyin
 
 python evaluate_transcript.py \
     -f ${result_1}

@@ -1,5 +1,11 @@
 import torch
 import torch.nn.functional as F
+from typing import List
+
+from transformers import AutoTokenizer
+
+from ..data_processor.record import Record, read_data_from_csv, read_data_from_json
+
 
 def perform_viterbi(prediction, labels, hop_size_second=0.02):
 
@@ -218,3 +224,9 @@ def get_mae_v2(gt, predict):
 
     error = error / cnt
     return error
+
+def get_ce_weight(
+    data_path: str, 
+    records: List[Record]
+):
+    pass

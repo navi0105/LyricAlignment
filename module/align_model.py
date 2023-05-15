@@ -22,7 +22,7 @@ class RNN(nn.Module):
                             batch_first=batch_first,
                             bidirectional=bidirectional)
         
-        # self.ln = nn.LayerNorm(hidden_size + (bidirectional * hidden_size))
+        self.ln = nn.LayerNorm(hidden_size + (bidirectional * hidden_size))
 
         self.activate = nn.Mish()
 
@@ -31,7 +31,7 @@ class RNN(nn.Module):
 
     def forward(self, x):
         out, _ = self.rnn(x)
-        # out = self.ln(out)
+        out = self.ln(out)
         out = self.activate(out)
         out = self.fc(out)
 
@@ -65,7 +65,11 @@ class AlignModel(torch.nn.Module):
 
         self.device = device
 
-    def forward(self, x, y_in=None):
+    def forward(
+        self,
+        x,
+        y_in=None,
+        is_align_batch: bool=True):
         # x => Mel
         # y_in => whisper decoder input
         # You can ignore y_in if you are doing alignment task
@@ -77,7 +81,7 @@ class AlignModel(torch.nn.Module):
 
         # Align Logit
         align_logit = None
-        if self.train_alignment:
+        if self.train_alignment and is_align_batch:
             align_logit = self.align_rnn(embed)
 
         # Transcribe Logit

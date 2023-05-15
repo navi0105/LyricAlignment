@@ -54,7 +54,7 @@ def parse_args():
     parser.add_argument(
         '--train-batch-size',
         type=int,
-        default=4
+        default=2
     )
     parser.add_argument(
         '--dev-batch-size',
@@ -83,7 +83,7 @@ def parse_args():
     parser.add_argument(
         '--train-steps',
         type=int,
-        default=1000
+        default=2000
     )
     parser.add_argument(
         '--eval-steps',
@@ -93,7 +93,7 @@ def parse_args():
     parser.add_argument(
         '--warmup-steps',
         type=int,
-        default=100
+        default=200
     )
 
     parser.add_argument(
@@ -142,12 +142,15 @@ def train_step(
     train_iter: Iterator,
     optimizer: torch.optim.Optimizer, 
     scheduler: torch.optim.lr_scheduler.LambdaLR,
-    loss_fn,
+    loss_fn: dict,
     accum_grad_steps: int,
     max_grad_norm: float,
+    vocab_size: int=21128,
 ) -> Tuple[float, Iterator]:
     model.train()
     total_loss = 0
+    total_ce_loss = 0
+    total_ctc_loss = 0
 
     for _ in range(accum_grad_steps):
         # mel, y_text, frame_labels, lyric_word_onset_offset
@@ -158,29 +161,35 @@ def train_step(
         # align_logits, transcribe_logits
         align_logits, _ = model(mel)
 
-        align_loss = compute_ce_loss(align_logits, frame_labels, loss_fn, model.device)
+        align_ce_loss = compute_ce_loss(align_logits, frame_labels, loss_fn, device=model.device)
+        align_ctc_loss = compute_ctc_loss(align_logits[:, :, : vocab_size], y_text, device=model.device)
 
-        loss = align_loss / accum_grad_steps
+        loss = (align_ce_loss + align_ctc_loss) / accum_grad_steps
         loss.backward()
 
-        total_loss += align_loss.item() / accum_grad_steps
+        total_loss += loss.item()
+        total_ce_loss += align_ce_loss.item() / accum_grad_steps
+        total_ctc_loss += align_ctc_loss.item() / accum_grad_steps
 
     torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
     optimizer.step()
     scheduler.step()
     optimizer.zero_grad()
 
-    return total_loss
+    return total_loss, total_ce_loss, total_ctc_loss
 
 
 @torch.no_grad()
 def evaluate(
     model: AlignModel,
     dev_loader: DataLoader,
-    loss_fn
+    loss_fn: dict,
+    vocab_size: int=21128,
 ) -> float:
     model.eval()
     total_loss = 0
+    total_ce_loss = 0
+    total_ctc_loss = 0
 
     # mel, y_text, frame_labels, lyric_word_onset_offset
     for mel, y_text, frame_labels, _ in tqdm(dev_loader):
@@ -193,13 +202,18 @@ def evaluate(
         # align_logits, transcribe_logits
         align_logits, _ = model(mel)
         
-        align_loss = compute_ce_loss(align_logits, frame_labels, loss_fn, model.device)
+        align_ce_loss = compute_ce_loss(align_logits, frame_labels, loss_fn, device=model.device)
+        align_ctc_loss = compute_ctc_loss(align_logits[:, :, : vocab_size], y_text, device=model.device)
 
-        total_loss += align_loss.item()
+        total_loss += align_ce_loss.item() + align_ctc_loss.item()
+        total_ce_loss += align_ce_loss.item()
+        total_ctc_loss += align_ctc_loss.item()
 
 
     total_loss /= len(dev_loader)
-    return total_loss
+    total_ce_loss /= len(dev_loader)
+    total_ctc_loss /= len(dev_loader)
+    return total_loss, total_ce_loss, total_ctc_loss
 
 
 def save_model(model, save_path: str) -> None:
@@ -214,20 +228,22 @@ def main_loop(
     dev_loader: DataLoader,
     optimizer: torch.optim.Optimizer,
     scheduler: torch.optim.lr_scheduler.LambdaLR,
-    loss_fn,
+    loss_fn: dict,
     args: argparse.Namespace,
 ) -> None:
-    min_loss = evaluate(model, dev_loader, loss_fn)
+    min_loss, init_ce_loss, init_ctc_loss = evaluate(model, dev_loader, loss_fn)
     avg_train_loss = 0
+    avg_ce_loss = 0
+    avg_ctc_loss = 0
 
     # Force Terminate if no_improve_count >= 3
     no_improve_count = 0
 
-    print(f"Initial loss: {min_loss}")
+    print(f"Initial loss: {min_loss}, Initial CE loss: {init_ce_loss}, Initial CTC loss: {init_ctc_loss}")
     pbar = tqdm(range(1, args.train_steps + 1))
     train_iter = infinite_iter(train_loader)
     for step in pbar:
-        train_loss = train_step(
+        train_loss, train_ce_loss, train_ctc_loss = train_step(
             model,
             train_iter,
             optimizer,
@@ -236,16 +252,22 @@ def main_loop(
             args.accum_grad_steps,
             args.max_grad_norm,
         )
-        pbar.set_postfix({"loss": train_loss})
+        pbar.set_postfix({"loss": train_loss,
+                          "ce_loss": train_ce_loss,
+                          "ctc_loss": train_ctc_loss})
         avg_train_loss += train_loss
+        avg_ce_loss += train_ce_loss
+        avg_ctc_loss += train_ctc_loss
 
         if step % args.eval_steps == 0:
-            eval_loss = evaluate(model, dev_loader, loss_fn)
+            eval_loss, eval_ce_loss, eval_ctc_loss = evaluate(model, dev_loader, loss_fn)
 
-            tqdm.write(f"Step {step}: valid loss={eval_loss}")
-            tqdm.write(f"Step {step}: train loss={avg_train_loss / args.eval_steps}")
+            tqdm.write(f"Step {step}: valid loss={eval_loss}, valid CE loss={eval_ce_loss}, valid CTC loss={eval_ctc_loss}")
+            tqdm.write(f"Step {step}: train loss={avg_train_loss / args.eval_steps}, train CE loss={avg_ce_loss / args.eval_steps}, train CTC loss={avg_ctc_loss / args.eval_steps}")
             
             avg_train_loss = 0
+            avg_ce_loss = 0
+            avg_ctc_loss = 0
         
             if eval_loss < min_loss:
                 # Reset no_improve_count
@@ -263,25 +285,52 @@ def main_loop(
 
             save_model(model, f"{args.save_dir}/last_model.pt")
 
-            if no_improve_count >= 5:
-                print("No improve, forced terminated.")
-                break
+            # if no_improve_count >= 5:
+            #     print("No improve, forced terminated.")
+            #     break
 
-def compute_ce_loss(logits: torch.Tensor, 
-                    frame_labels: torch.Tensor, 
-                    ce_loss: nn.CrossEntropyLoss, 
-                    device) -> torch.Tensor:
+def compute_ce_loss(
+    logits: torch.Tensor, 
+    frame_labels: torch.Tensor, 
+    loss_fn: dict,
+    vocab_size: int=21128,
+    device: str='cuda'
+) -> torch.Tensor:
     frame_labels = frame_labels[:, : logits.shape[1]]
     if frame_labels.shape[1] < logits.shape[1]:
         frame_labels = torch.cat((frame_labels, 
                                   torch.full((frame_labels.shape[0], logits.shape[1] - frame_labels.shape[1]), 
-                                             fill_value=0, 
+                                             fill_value=-100, 
                                              device=device)), 
                                   dim=1)
         
-    loss = ce_loss(logits.permute(0, 2, 1), frame_labels)
-    return loss
+    # loss = ce_loss(logits.permute(0, 2, 1), frame_labels)
+    frame_labels[frame_labels != -100] -= 1
+
+    word_ce_loss = loss_fn['ce_loss'](logits[:, :, 1: vocab_size].transpose(1, 2), frame_labels)
+
+    silence_label = torch.where(frame_labels == -100, 1, 0)
+    silence_ce_loss = loss_fn['silence_ce_loss'](logits[:, :, vocab_size], silence_label.float())
+
+    return word_ce_loss + silence_ce_loss
     
+def compute_ctc_loss(
+    logits,
+    labels,
+    device: str='cuda',
+):
+    output_log_sm = F.log_softmax(logits, dim=2)
+    output_log_sm = output_log_sm.transpose(0, 1)
+
+    # print (output_log_sm.shape, labels.shape)
+
+    input_lengths = torch.full(size=(output_log_sm.shape[1],), fill_value=output_log_sm.shape[0], dtype=torch.long).to(device)
+    target_length = torch.sum(labels != -100, dim=1)
+    # print (target_length)
+
+    cur_ctc_loss = F.ctc_loss(output_log_sm, labels, input_lengths, target_length)
+    return cur_ctc_loss
+
 
 def main():
     args = parse_args()
@@ -300,7 +349,7 @@ def main():
 
     align_model = AlignModel(whisper_model=whisper_model,
                              embed_dim=WHISPER_DIM[args.whisper_model],
-                             output_dim=len(tokenizer),
+                             output_dim=len(tokenizer) + 1,
                              freeze_encoder=args.freeze_encoder,
                              train_alignment=True,
                              device=device).to(device)
@@ -330,7 +379,8 @@ def main():
                                               shuffle=False)
 
 
-    loss_fn = nn.CrossEntropyLoss()
+    loss_fn = {'ce_loss': nn.CrossEntropyLoss(),
+               'silence_ce_loss': nn.BCEWithLogitsLoss()}
 
     main_loop(
         model=align_model,

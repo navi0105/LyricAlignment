@@ -22,16 +22,16 @@ class RNN(nn.Module):
                             batch_first=batch_first,
                             bidirectional=bidirectional)
         
-        self.ln = nn.LayerNorm(hidden_size + (bidirectional * hidden_size))
+        # self.ln = nn.LayerNorm(hidden_size + (bidirectional * hidden_size))
 
         self.activate = nn.Mish()
 
         self.fc = nn.Linear(hidden_size + (bidirectional * hidden_size), 
-                            output_size + 1)
+                            output_size)
 
     def forward(self, x):
         out, _ = self.rnn(x)
-        out = self.ln(out)
+        # out = self.ln(out)
         out = self.activate(out)
         out = self.fc(out)
 

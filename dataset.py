@@ -46,10 +46,10 @@ class AlignmentDataset(Dataset):
         record = self.records[index]
 
         mel = self._calculate_mel(record.audio_path)
-        text_token = self._encode_text(record.text)
+        text = record.text
         lyric_onset_offset = record.lyric_onset_offset
 
-        return (mel, text_token, lyric_onset_offset)
+        return (mel, text, lyric_onset_offset)
     
     def get_frame_label(
         self, 
@@ -60,7 +60,7 @@ class AlignmentDataset(Dataset):
         total_frame_num = max([lyric_word_onset_offset[i][-1][-1] for i in range(len(lyric_word_onset_offset))])
         total_frame_num = int(round(total_frame_num / hop_size_second)) + 1
 
-        frame_labels = torch.full((len(lyric_word_onset_offset), total_frame_num), 0)
+        frame_labels = torch.full((len(lyric_word_onset_offset), total_frame_num), -100)
 
         for i in range(len(lyric_word_onset_offset)):
             for j in range(len(lyric_word_onset_offset[i])):
@@ -71,17 +71,22 @@ class AlignmentDataset(Dataset):
         return frame_labels
 
     def collate_fn(self, data):
-        x, y_text, lyric_word_onset_offset = zip(*data)
+        x, text, lyric_word_onset_offset = zip(*data)
 
         x = pad_sequence(x, batch_first=True, padding_value=0)
-        y_text = pad_sequence(y_text, batch_first=True, padding_value=0)
 
-        y_text[y_text == 0] = -100
-        y_text[y_text == 102] = -100
+        text_tokens = self.tokenizer(text, padding=True, return_tensors='pt')['input_ids'][:, 1:]
+        text_tokens[text_tokens == 0] = -100
+        text_tokens[text_tokens == 102] = -100
 
-        frame_labels = self.get_frame_label(y_text, lyric_word_onset_offset)
+        # y_text = pad_sequence(y_text, batch_first=True, padding_value=0)
+
+        # y_text[y_text == 0] = -100
+        # y_text[y_text == 102] = -100
+
+        frame_labels = self.get_frame_label(text_tokens, lyric_word_onset_offset)
         
-        return x, y_text, frame_labels, lyric_word_onset_offset
+        return x, text_tokens, frame_labels, lyric_word_onset_offset
 
 def get_alignment_dataloader(
     data_path: str,

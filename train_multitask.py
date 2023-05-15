@@ -154,6 +154,8 @@ def train_step(
     scheduler: torch.optim.lr_scheduler.LambdaLR,
     accum_grad_steps: int,
     max_grad_norm: float,
+    loss_fn: dict,
+    vocab_size: int=21128,
     use_ctc_loss: bool=False
 ):
     model.train()
@@ -178,9 +180,13 @@ def train_step(
         # align_logits, transcribe_logits
         align_logits, transcript_logits = model(mel, decoder_input)
 
-        align_ce_loss = compute_ce_loss(align_logits, frame_labels, device=device)
+        align_ce_loss = compute_ce_loss(align_logits,
+                                        frame_labels,
+                                        loss_fn,
+                                        compute_sil=use_ctc_loss,
+                                        device=device)
         if use_ctc_loss:
-            align_ctc_loss = compute_ctc_loss(align_logits[:, :, : 21128], align_text, device)
+            align_ctc_loss = compute_ctc_loss(align_logits[:, :, : vocab_size], align_text, device)
 
         transcript_loss = F.cross_entropy(transcript_logits.permute(0, 2, 1), decoder_output)
 
@@ -211,6 +217,8 @@ def train_step(
 def evaluate(
     model: AlignModel,
     dev_loader: DataLoader,
+    loss_fn: dict,
+    vocab_size: int=21128,
     use_ctc_loss: bool=False
 ):
     model.eval()
@@ -229,16 +237,22 @@ def evaluate(
         decoder_input = decoder_input.to(model.device)
         decoder_output = decoder_output.to(model.device)
 
+        # print(align_text)
+
         # TODO: Add Whisper Evaluate
         # Trainsribe Loss
 
         # Align Logits Shape: [batch size, time length, number of classes] => (N, T, C)
         # align_logits, transcribe_logits
         align_logits, transcript_logits = model(mel, decoder_input)
-
-        align_ce_loss = compute_ce_loss(align_logits, frame_labels, device=model.device)
+        
+        align_ce_loss = compute_ce_loss(align_logits,
+                                        frame_labels,
+                                        loss_fn,
+                                        compute_sil=use_ctc_loss,
+                                        device=model.device)
         if use_ctc_loss:
-            align_ctc_loss = compute_ctc_loss(align_logits[:, :, : 21128], align_text, model.device)
+            align_ctc_loss = compute_ctc_loss(align_logits[:, :, : vocab_size], align_text, model.device)
 
         transcript_loss = F.cross_entropy(transcript_logits.permute(0, 2, 1), decoder_output)
 
@@ -274,9 +288,13 @@ def main_loop(
     dev_loader: DataLoader,
     optimizer: torch.optim.Optimizer,
     scheduler: torch.optim.lr_scheduler.LambdaLR,
+    loss_fn: dict,
     args: argparse.Namespace,
 ) -> None:
-    min_loss, init_align_loss, init_align_ctc_loss, init_transcript_loss = evaluate(model, dev_loader, args.use_ctc_loss)
+    min_loss, init_align_loss, init_align_ctc_loss, init_transcript_loss = evaluate(model, 
+                                                                                    dev_loader, 
+                                                                                    loss_fn=loss_fn,
+                                                                                    use_ctc_loss=args.use_ctc_loss)
     avg_train_loss = 0
     avg_align_ce_loss = 0
     avg_align_ctc_loss = 0
@@ -299,7 +317,8 @@ def main_loop(
             scheduler,
             args.accum_grad_steps,
             args.max_grad_norm,
-            args.use_ctc_loss
+            loss_fn=loss_fn,
+            use_ctc_loss=args.use_ctc_loss,
         )
         if args.use_ctc_loss:
             pbar.set_postfix({"loss": train_loss,
@@ -317,7 +336,10 @@ def main_loop(
         avg_transcript_loss += train_transcript_loss
 
         if step % args.eval_steps == 0:
-            eval_loss, eval_align_ce_loss, eval_align_ctc_loss, eval_transcript_loss = evaluate(model, dev_loader, args.use_ctc_loss)
+            eval_loss, eval_align_ce_loss, eval_align_ctc_loss, eval_transcript_loss = evaluate(model, 
+                                                                                                dev_loader, 
+                                                                                                loss_fn=loss_fn,
+                                                                                                use_ctc_loss=args.use_ctc_loss)
 
             if args.use_ctc_loss:
                 tqdm.write(f"Step {step}: valid loss={eval_loss}, valid align CE loss={eval_align_ce_loss}, valid align CTC loss={eval_align_ctc_loss}, valid transcript loss={eval_transcript_loss}")
@@ -353,39 +375,49 @@ def main_loop(
 
 def compute_ce_loss(
     logits: torch.Tensor, 
-    frame_labels: torch.Tensor,
+    frame_labels: torch.Tensor, 
+    loss_fn: dict,
+    compute_sil: bool=False,
     vocab_size: int=21128,
-    device: str='cuda') -> torch.Tensor:
+    device: str='cuda'
+) -> torch.Tensor:
     frame_labels = frame_labels[:, : logits.shape[1]]
     if frame_labels.shape[1] < logits.shape[1]:
         frame_labels = torch.cat((frame_labels, 
                                   torch.full((frame_labels.shape[0], logits.shape[1] - frame_labels.shape[1]), 
-                                             fill_value=0, 
+                                             fill_value=-100, 
                                              device=device)), 
                                   dim=1)
-        
-    # loss = F.cross_entropy(logits.permute(0, 2, 1), frame_labels)
-    frame_labels[frame_labels != -100] = 1
-    word_loss = F.cross_entropy(logits[:, :, 1:vocab_size].permute(0, 2, 1), frame_labels)
 
-    silence_labels = torch.where(frame_labels == -100, 1, 0)
-    silence_loss = F.binary_cross_entropy_with_logits(logits[:, :, vocab_size], silence_labels.float())
+    if compute_sil == False:    
+        loss = F.cross_entropy(logits.permute(0, 2, 1), frame_labels)
+        return loss
 
-    return word_loss + silence_loss
-    
+    frame_labels[frame_labels != -100] -= 1
+
+    word_ce_loss = loss_fn['ce_loss'](logits[:, :, 1: vocab_size].transpose(1, 2), frame_labels)
+
+    silence_label = torch.where(frame_labels == -100, 1, 0)
+    silence_ce_loss = loss_fn['silence_ce_loss'](logits[:, :, vocab_size], silence_label.float())
+
+    return word_ce_loss + silence_ce_loss
+
 def compute_ctc_loss(
     logits,
     labels,
-    device: str='cuda'
+    device: str='cuda',
 ):
-    logits_log_sm = F.log_softmax(logits, dim=2)
+    output_log_sm = F.log_softmax(logits, dim=2)
+    output_log_sm = output_log_sm.transpose(0, 1)
 
-    logit_lengths = torch.full(size=(logits_log_sm.shape[0], ), fill_value=logits_log_sm.shape[1], dtype=torch.long).to(device)
-    target_lengths = torch.sum(labels != -100, dim=1)
+    # print (output_log_sm.shape, labels.shape)
 
-    loss = F.ctc_loss(logits_log_sm.permute(1, 0, 2), labels, logit_lengths, target_lengths)
-    return loss
+    input_lengths = torch.full(size=(output_log_sm.shape[1],), fill_value=output_log_sm.shape[0], dtype=torch.long).to(device)
+    target_length = torch.sum(labels != -100, dim=1)
+    # print (target_length)
 
+    cur_ctc_loss = F.ctc_loss(output_log_sm, labels, input_lengths, target_length)
+    return cur_ctc_loss
 
 def main():
     args = parse_args()
@@ -406,7 +438,7 @@ def main():
 
     multitask_model = AlignModel(whisper_model=whisper_model,
                              embed_dim=WHISPER_DIM[args.whisper_model],
-                             output_dim=len(hf_tokenizer),
+                             output_dim=len(hf_tokenizer) + args.use_ctc_loss,
                              freeze_encoder=args.freeze_encoder,
                              train_alignment=True,
                              train_transcribe=True,
@@ -441,12 +473,16 @@ def main():
         shuffle=False
     )
 
+    loss_fn = {'ce_loss': nn.CrossEntropyLoss(),
+            'silence_ce_loss': nn.BCEWithLogitsLoss()}
+
     main_loop(
         model=multitask_model,
         train_loader=train_dataloader,
         dev_loader=dev_dataloader,
         optimizer=optimizer,
         scheduler=scheduler,
+        loss_fn=loss_fn,
         args=args
     )
 

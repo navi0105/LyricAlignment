@@ -123,7 +123,7 @@ def load_align_model(
     whisper_model = whisper.load_model(whisper_model_name, device=device)
     model = AlignModel(whisper_model=whisper_model,
                        embed_dim=WHISPER_DIM[whisper_model_name],
-                       output_dim=len(tokenizer),
+                       output_dim=len(tokenizer) + model_args['use_ctc_loss'],
                        device=device)
     
     if model_path is not None:

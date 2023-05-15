@@ -56,8 +56,6 @@ def read_data_from_csv(data_path):
 
     return records
 
-opencpop_black_list = ['2092003409', '2093003461']
-
 def read_data_from_json(
         data_path: str,
         get_onset_offset: bool=True

@@ -19,6 +19,7 @@ class AlignmentDataset(Dataset):
         self,
         records: List[Record],
         tokenizer,
+        use_ctc: bool=False
     ) -> None:
         self.records = records
         self.tokenizer = tokenizer
@@ -55,7 +56,7 @@ class AlignmentDataset(Dataset):
         self, 
         lyric_tokens, 
         lyric_word_onset_offset, 
-        hop_size_second=0.02
+        hop_size_second=0.02,
     ):
         total_frame_num = max([lyric_word_onset_offset[i][-1][-1] for i in range(len(lyric_word_onset_offset))])
         total_frame_num = int(round(total_frame_num / hop_size_second)) + 1
@@ -92,6 +93,7 @@ def get_alignment_dataloader(
     data_path: str,
     tokenizer,
     batch_size: int=1,
+    use_ctc: bool=False,
     shuffle: bool=False
     ) -> DataLoader:
     assert os.path.exists(data_path)
@@ -101,7 +103,8 @@ def get_alignment_dataloader(
         records = read_data_from_json(data_path)
 
     dataset = AlignmentDataset(records=records,
-                               tokenizer=tokenizer)
+                               tokenizer=tokenizer,
+                               use_ctc=use_ctc)
     
     return DataLoader(
         dataset=dataset,
@@ -276,13 +279,15 @@ class MultitaskDataset(Dataset):
         hf_tokenizer,
         whisper_tokenizer: Tokenizer,
         language: str='zh',
-        no_timestamps: bool=True
+        no_timestamps: bool=True,
+        use_ctc: bool=False
     ):
         self.records = records
         self.hf_tokenizer = hf_tokenizer
         self.whisper_tokenizer = whisper_tokenizer
         self.language = language
         self.no_timestamps = no_timestamps
+        self.use_ctc = use_ctc
 
     def _calculate_mel(
         self,
@@ -428,8 +433,10 @@ class MultitaskDataset(Dataset):
         lyric_word_onset_offset,
         hop_size_second: float=0.02
     ):
+        fill_value = -100 if self.use_ctc else 0
+
         total_frame_num = int(round(lyric_word_onset_offset[-1][-1] / hop_size_second)) + 1
-        frame_labels = torch.full((total_frame_num,), -100)
+        frame_labels = torch.full((total_frame_num,), fill_value=-100)
 
         for j in range(len(lyric_word_onset_offset)):
             onset_frame = int(round(lyric_word_onset_offset[j][0] / hop_size_second))
@@ -444,10 +451,12 @@ class MultitaskDataset(Dataset):
         lyric_word_onset_offset,
         hop_size_second: float=0.02
     ):
+        fill_value = -100 if self.use_ctc else 0
+
         total_frame_num = max([lyric_word_onset_offset[i][-1][-1] for i in range(len(lyric_word_onset_offset))])
         total_frame_num = int(round(total_frame_num / hop_size_second)) + 1
 
-        frame_labels = torch.full((len(lyric_word_onset_offset), total_frame_num), -100)
+        frame_labels = torch.full((len(lyric_word_onset_offset), total_frame_num), fill_value=fill_value)
 
         for i in range(len(lyric_word_onset_offset)):
             for j in range(len(lyric_word_onset_offset[i])):
@@ -470,13 +479,13 @@ class MultitaskDataset(Dataset):
         align_text_tokens[align_text_tokens == 0] = -100
         align_text_tokens[align_text_tokens == 102] = -100
 
-        # frame_labels = []
-        # for i in range(len(data)):
-        #     if lyric_onset_offset[i] is not None:
-        #         frame_labels.append(self.get_frame_label(align_text[i], lyric_onset_offset[i]))
-        #     else:
-        #         frame_labels.append(None)
-        frame_labels = self.batch_get_frame_label(align_text_tokens, lyric_onset_offset)
+        frame_labels = []
+        for i in range(len(data)):
+            if lyric_onset_offset[i] is not None:
+                frame_labels.append(self.get_frame_label(align_text_tokens[i], lyric_onset_offset[i]))
+            else:
+                frame_labels.append(None)
+        # frame_labels = self.batch_get_frame_label(align_text_tokens, lyric_onset_offset)
         
         # Transcript Token
         decoder_input = pad_sequence(decoder_input, batch_first=True, padding_value=0)

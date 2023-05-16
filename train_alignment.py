@@ -263,9 +263,9 @@ def main_loop(
 
             save_model(model, f"{args.save_dir}/last_model.pt")
 
-            if no_improve_count >= 5:
-                print("No improve, forced terminated.")
-                break
+            # if no_improve_count >= 5:
+            #     print("No improve, forced terminated.")
+            #     break
 
 def compute_ce_loss(logits: torch.Tensor, 
                     frame_labels: torch.Tensor, 
@@ -275,7 +275,7 @@ def compute_ce_loss(logits: torch.Tensor,
     if frame_labels.shape[1] < logits.shape[1]:
         frame_labels = torch.cat((frame_labels, 
                                   torch.full((frame_labels.shape[0], logits.shape[1] - frame_labels.shape[1]), 
-                                             fill_value=0, 
+                                             fill_value=-100, 
                                              device=device)), 
                                   dim=1)
         

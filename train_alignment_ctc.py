@@ -368,7 +368,7 @@ def main():
         optimizer, num_warmup_steps=args.warmup_steps, num_training_steps=args.train_steps
     )
 
-    assert os.path.exists(args.train_data)
+    # assert os.path.exists(args.train_data)
     train_dataloader = get_alignment_dataloader(data_path=args.train_data,
                                                 tokenizer=tokenizer,
                                                 batch_size=args.train_batch_size,

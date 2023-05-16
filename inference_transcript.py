@@ -51,7 +51,7 @@ def parse_args():
         help=""
     )
     parser.add_argument(
-        "--output",
+        "-o", "--output",
         type=str,
         default="output/result.json"
     )

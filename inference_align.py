@@ -42,7 +42,8 @@ def parse_args():
     )
     parser.add_argument(
         '--predict-sil',
-        action='store_true'
+        action='store_true',
+        help='set this flag for model trained with ctc loss'
     )
     parser.add_argument(
         '--use-pypinyin',
@@ -230,6 +231,7 @@ def main():
     test_dataloader = get_alignment_dataloader(data_path=args.test_data,
                                                 tokenizer=tokenizer,
                                                 batch_size=args.batch_size,
+                                                use_ctc=args.predict_sil,
                                                 shuffle=False)
     
     align_and_evaluate(model=model,

@@ -11,6 +11,7 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader
 import whisper
 from whisper.tokenizer import get_tokenizer
@@ -170,6 +171,10 @@ def train_step(
         # mel, y_text, frame_labels, lyric_word_onset_offset
         mel, align_text, frame_labels, _, decoder_input, decoder_output = next(train_iter)
 
+        frame_labels = pad_sequence(frame_labels,
+                                     batch_first=True,
+                                     padding_value=-100)
+
         mel = mel.to(device)
         align_text = align_text.to(device)
         frame_labels = frame_labels.to(device)
@@ -230,6 +235,10 @@ def evaluate(
     # mel, y_text, frame_labels, lyric_word_onset_offset
     for batch in tqdm(dev_loader):
         mel, align_text, frame_labels, _, decoder_input, decoder_output = batch
+
+        frame_labels = pad_sequence(frame_labels,
+                                     batch_first=True,
+                                     padding_value=-100)
 
         mel = mel.to(model.device)
         align_text = align_text.to(model.device)

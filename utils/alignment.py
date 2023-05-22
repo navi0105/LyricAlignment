@@ -4,8 +4,9 @@ from typing import List
 
 from transformers import AutoTokenizer
 
-# from ..data_processor.record import Record, read_data_from_csv, read_data_from_json
-
+import sys
+sys.path.insert(0, '..')
+from data_processor.record import read_data_from_json
 
 def perform_viterbi(prediction, labels, hop_size_second=0.02):
 
@@ -225,8 +226,55 @@ def get_mae_v2(gt, predict):
     error = error / cnt
     return error
 
-# def get_ce_weight(
-#     data_path: str, 
-#     records: List[Record]
-# ):
-#     pass
+
+def batch_get_frame_label(
+        lyric_tokens,
+        lyric_word_onset_offset,
+        hop_size_second: float=0.02
+    ):
+        fill_value = -100
+        # fill_value = -100
+
+        total_frame_num = max([lyric_word_onset_offset[i][-1][-1] for i in range(len(lyric_word_onset_offset))])
+        total_frame_num = int(round(total_frame_num / hop_size_second)) + 1
+
+        frame_labels = torch.full((len(lyric_word_onset_offset), total_frame_num), fill_value=fill_value)
+
+        for i in range(len(lyric_word_onset_offset)):
+            for j in range(len(lyric_word_onset_offset[i])):
+                onset_frame = int(round(lyric_word_onset_offset[i][j][0] / hop_size_second))
+                offset_frame = int(round(lyric_word_onset_offset[i][j][1] / hop_size_second)) + 1
+                frame_labels[i][onset_frame: offset_frame] = lyric_tokens[i][j]
+
+        return frame_labels
+
+def get_ce_weight(
+    data_path: str,
+    tokenizer,
+):
+    records = read_data_from_json(data_path)
+    freq = torch.full((len(tokenizer),), 0.001)
+    for i in range(len(records)):
+        if not hasattr(records[i], "lyric_onset_offset"):
+            continue
+
+        target_transcription = [records[i].text]
+        labels = tokenizer(target_transcription, 
+                           padding=True, 
+                           return_tensors="pt").input_ids[:,1:]
+
+        labels[labels == 0] = -100
+        labels[labels == 102] = -100
+
+        lyric_word_onset_offset = [records[i].lyric_onset_offset]
+        frame_labels = batch_get_frame_label(labels, lyric_word_onset_offset)
+
+        for j in range(len(frame_labels)):
+            for k in range(len(frame_labels[j])):
+                freq[int(frame_labels[j][k])] += 1
+
+    freq = freq / torch.sum(freq)
+
+    return 1.0 / freq
+
+        

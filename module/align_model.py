@@ -1,7 +1,12 @@
+import numpy as np
+import itertools
+from typing import List
+
 import torch
 from torch import nn
+from torch.nn.utils.rnn import pad_sequence
 import whisper
-
+from whisper.audio import N_FRAMES, pad_or_trim, log_mel_spectrogram
    
 class RNN(nn.Module):
     def __init__(
@@ -42,7 +47,7 @@ class AlignModel(torch.nn.Module):
         whisper_model: whisper.Whisper,
         embed_dim: int=1280,
         hidden_dim: int=384,
-        dropout: float=0.2,
+        dropout: float=0.15,
         output_dim: int=10000,
         freeze_encoder: bool=False,
         train_alignment: bool=True,
@@ -65,18 +70,66 @@ class AlignModel(torch.nn.Module):
 
         self.device = device
 
+    def frame_manual_forward(
+        self,
+        audios: List[np.ndarray],
+        y_in=None,
+        get_orig_len: bool=True
+    ):
+        audios = np.stack((itertools.zip_longest(*audios, fillvalue=0)), axis=1).astype('float32')
+        mel = log_mel_spectrogram(audios).to(self.device)
+        if get_orig_len:
+            if mel.shape[-1] <= N_FRAMES:
+                orig_mel_len = int(round(mel.shape[-1] / 2.0))
+                mel = pad_or_trim(mel, N_FRAMES)
+                
+                embed_pad = self.whisper_model.embed_audio(mel)
+                embed = embed_pad[:, : orig_mel_len, :]
+            else:
+                embed = []
+                for i in range(0, mel.shape[-1], N_FRAMES):
+                    start = i
+                    end = min(i + N_FRAMES, mel.shape[-1])
+                    orig_mel_len = int(round((end - start) / 2.0))
+
+                    cur_mel = pad_or_trim(mel[:, :, start: end], N_FRAMES)
+                    cur_embed = self.whisper_model.embed_audio(cur_mel)
+
+                    embed.append(cur_embed[:, : orig_mel_len, :])
+                embed = torch.cat(embed, dim=1)
+                embed_pad = embed[:, : (N_FRAMES // 2), :]
+
+            align_logit = self.align_rnn(embed)
+        else:
+            mel = pad_or_trim(mel, N_FRAMES)
+            mel = pad_sequence(mel, batch_first=True, padding_value=0)
+            embed_pad = self.whisper_model.embed_audio(mel)
+            
+            align_logit = self.align_rnn(embed_pad)
+        
+
+        transcribe_logit = None
+        if self.train_transcribe and y_in is not None:
+            transcribe_logit = self.whisper_model.logits(tokens=y_in,
+                                                         audio_features=embed_pad)
+
+        return align_logit, transcribe_logit
+
+
     def forward(
         self,
-        x,
+        mel,
         y_in=None):
         # x => Mel
         # y_in => whisper decoder input
         # You can ignore y_in if you are doing alignment task
+        
+        
         if self.freeze_encoder:
             with torch.no_grad():
-                embed = self.whisper_model.embed_audio(x)
+                embed = self.whisper_model.embed_audio(mel)
         else:
-            embed = self.whisper_model.embed_audio(x)
+            embed = self.whisper_model.embed_audio(mel)
 
         # Align Logit
         align_logit = None
@@ -85,10 +138,8 @@ class AlignModel(torch.nn.Module):
 
         # Transcribe Logit
         transcribe_logit = None
-        if self.train_transcribe:
-            assert y_in is not None
+        if self.train_transcribe and y_in is not None:
             transcribe_logit = self.whisper_model.logits(tokens=y_in,
                                                          audio_features=embed)
-        
 
         return align_logit, transcribe_logit

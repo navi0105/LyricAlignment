@@ -18,6 +18,7 @@ from whisper.tokenizer import get_tokenizer
 from transformers import AutoTokenizer, get_linear_schedule_with_warmup
 
 from module.align_model import AlignModel
+from utils.alignment import get_ce_weight
 from dataset import get_multitask_dataloader
 
 os.environ["TOKENIZERS_PARALLELISM"]="false"
@@ -155,7 +156,7 @@ def rebatch_handler(
     batch,
     is_multitask: bool=False
 ):
-    mel = torch.stack([item[0] for item in batch])
+    audios = [item[0] for item in batch]
     align_text = torch.stack([item[1] for item in batch])
 
     if is_multitask:
@@ -170,7 +171,7 @@ def rebatch_handler(
     decoder_input = torch.stack([item[4] for item in batch])
     decoder_output = torch.stack([item[5] for item in batch])
 
-    return mel, align_text, frame_labels, lyric_onset_offset, decoder_input, decoder_output
+    return audios, align_text, frame_labels, lyric_onset_offset, decoder_input, decoder_output
 
 def split_batch(batch):
     # multitask batch => alignment + decoder transcript
@@ -225,7 +226,9 @@ def train_step(
     max_grad_norm: float,
     loss_fn: dict,
     vocab_size: int=21128,
-    use_ctc_loss: bool=False
+    use_ctc_loss: bool=False,
+    get_orig_len: bool=True,
+    allow_transcript: bool=True,
 ):
     model.train()
     
@@ -239,17 +242,22 @@ def train_step(
     for _ in range(accum_grad_steps):
         batch = next(train_iter)
         multitask_batch, transcript_batch = split_batch(batch)
-        align_batch = get_align_batch(batch)
+        # align_batch = get_align_batch(batch)
 
-        # mel
+        # audios
         # y_text
         # frame_labels
         # lyric_word_onset_offset
         # decoder_input
         # decoder_output
         if multitask_batch is not None:
-            multi_align_logits, multi_trans_logits = model(multitask_batch[0].to(device),
-                                                           multitask_batch[4].to(device))
+            decoder_input = multitask_batch[4].to(device) if allow_transcript else None
+
+            multi_align_logits, multi_trans_logits = model.frame_manual_forward(
+                multitask_batch[0],
+                decoder_input,
+                get_orig_len=get_orig_len
+            )
             multi_align_ce_loss = compute_ce_loss(multi_align_logits,
                                                   multitask_batch[2].to(device),
                                                   loss_fn=loss_fn,
@@ -259,7 +267,11 @@ def train_step(
                 multi_align_ctc_loss = compute_ctc_loss(multi_align_logits[:, :, : vocab_size],
                                                         multitask_batch[1].to(device),
                                                         device=device)
-            multi_trans_loss = F.cross_entropy(multi_trans_logits.permute(0, 2, 1), multitask_batch[-1].to(device))
+            
+            if allow_transcript:
+                multi_trans_loss = F.cross_entropy(multi_trans_logits.permute(0, 2, 1), multitask_batch[-1].to(device))
+            else:
+                multi_trans_loss = torch.tensor(0, device=device)
 
             multitask_loss = multi_align_ce_loss + multi_trans_loss
             if use_ctc_loss:
@@ -270,9 +282,12 @@ def train_step(
             multi_trans_loss = torch.tensor(0, device=device)
             multitask_loss = torch.tensor(0, device=device)
 
-        if transcript_batch is not None:
-            _, trans_logits = model(transcript_batch[0].to(device),
-                                    transcript_batch[4].to(device))
+        if transcript_batch is not None and allow_transcript:
+            _, trans_logits = model.frame_manual_forward(
+                transcript_batch[0],
+                transcript_batch[4].to(device),
+                get_orig_len=get_orig_len
+            )
             transcript_loss = F.cross_entropy(trans_logits.permute(0, 2, 1), transcript_batch[-1].to(device))
         else:
             transcript_loss = torch.tensor(0, device=device)
@@ -300,7 +315,8 @@ def evaluate(
     dev_loader: DataLoader,
     loss_fn: dict,
     vocab_size: int=21128,
-    use_ctc_loss: bool=False
+    use_ctc_loss: bool=False,
+    get_orig_len: bool=True
 ):
     device = model.device
 
@@ -321,8 +337,11 @@ def evaluate(
         # decoder_input
         # decoder_output
         if multitask_batch is not None:
-            multi_align_logits, multi_trans_logits = model(multitask_batch[0].to(device),
-                                                           multitask_batch[4].to(device))
+            multi_align_logits, multi_trans_logits = model.frame_manual_forward(
+                multitask_batch[0],
+                multitask_batch[4].to(device),
+                get_orig_len=get_orig_len
+            )
             multi_align_ce_loss = compute_ce_loss(multi_align_logits,
                                                   multitask_batch[2].to(device),
                                                   loss_fn=loss_fn,
@@ -344,8 +363,11 @@ def evaluate(
             multitask_loss = torch.tensor(0, device=device)
 
         if transcript_batch is not None:
-            _, trans_logits = model(transcript_batch[0].to(device),
-                                    transcript_batch[4].to(device))
+            _, trans_logits = model.frame_manual_forward(
+                transcript_batch[0],
+                transcript_batch[4].to(device),
+                get_orig_len=get_orig_len
+            )
             transcript_loss = F.cross_entropy(trans_logits.permute(0, 2, 1), transcript_batch[-1].to(device))
         else:
             transcript_loss = torch.tensor(0, device=device)
@@ -377,13 +399,17 @@ def main_loop(
     scheduler: torch.optim.lr_scheduler.LambdaLR,
     loss_fn: dict,
     args: argparse.Namespace,
+    get_orig_len: bool=True,
 ) -> None:
     init_losses = evaluate(model, 
                            dev_loader, 
                            loss_fn=loss_fn,
-                           use_ctc_loss=args.use_ctc_loss)
+                           use_ctc_loss=args.use_ctc_loss,
+                           get_orig_len=get_orig_len)
     
     min_loss = init_losses['total']
+    min_align_loss = init_losses['align_ce'] + init_losses['align_ctc']
+    min_trans_loss = init_losses['trans_ce']
     
     avg_losses = {'total': 0,
             'align_ce': 0,
@@ -391,16 +417,20 @@ def main_loop(
             'trans_ce': 0}
 
     # Force Terminate if no_improve_count >= 5
-    no_improve_count = 0
+    # no_improve_count = 0
 
     if args.use_ctc_loss:
         print(f"Initial loss: {min_loss}, Align CE loss: {init_losses['align_ce']}, Align CTC loss: {init_losses['align_ctc']}, Transcript loss: {init_losses['trans_ce']}")
     else:
         print(f"Initial loss: {min_loss}, Align loss: {init_losses['align_ce']}, Transcript loss: {init_losses['trans_ce']}")
-        
+    
+    transcript_late_start_steps = int(args.train_steps * 0.8)
+    print(f'decoder finetune delayed until step {transcript_late_start_steps}')
     pbar = tqdm(range(1, args.train_steps + 1))
     train_iter = infinite_iter(train_loader)
     for step in pbar:
+        allow_transcript = True if step > transcript_late_start_steps else False
+
         train_losses = train_step(
             model,
             train_iter,
@@ -410,6 +440,8 @@ def main_loop(
             args.max_grad_norm,
             loss_fn=loss_fn,
             use_ctc_loss=args.use_ctc_loss,
+            get_orig_len=get_orig_len,
+            allow_transcript=allow_transcript
         )
         if args.use_ctc_loss:
             pbar.set_postfix({
@@ -433,7 +465,8 @@ def main_loop(
                 model, 
                 dev_loader, 
                 loss_fn=loss_fn,
-                use_ctc_loss=args.use_ctc_loss
+                use_ctc_loss=args.use_ctc_loss,
+                get_orig_len=get_orig_len
             )
 
             if args.use_ctc_loss:
@@ -451,6 +484,16 @@ def main_loop(
                 min_loss = eval_losses['total']
                 tqdm.write("Saving The Best Model")
                 save_model(model, f"{args.save_dir}/best_model.pt")
+
+            if (eval_losses['align_ce'] + eval_losses['align_ctc']) < min_align_loss:
+                min_align_loss = eval_losses['align_ce'] + eval_losses['align_ctc']
+                tqdm.write("Saving The Best Align Model")
+                save_model(model, f"{args.save_dir}/step_{step}_best_align_model.pt")
+
+            if eval_losses['trans_ce'] < min_trans_loss:
+                min_trans_loss = eval_losses['trans_ce']
+                tqdm.write("Saving The Best Transcript Model")
+                save_model(model, f"{args.save_dir}/step_{step}_best_trans_model.pt")
 
             if args.save_all_checkpoints:
                 save_model(model, f"{args.save_dir}/step{step}.pt")
@@ -471,7 +514,7 @@ def compute_ce_loss(
     if frame_labels.shape[1] < logits.shape[1]:
         frame_labels = torch.cat((frame_labels, 
                                   torch.full((frame_labels.shape[0], logits.shape[1] - frame_labels.shape[1]), 
-                                             fill_value=fill_value, 
+                                             fill_value=-100, 
                                              device=device)), 
                                   dim=1)
 
@@ -498,7 +541,9 @@ def compute_ctc_loss(
 
     # print (output_log_sm.shape, labels.shape)
 
-    input_lengths = torch.full(size=(output_log_sm.shape[1],), fill_value=output_log_sm.shape[0], dtype=torch.long).to(device)
+    input_lengths = torch.full(size=(output_log_sm.shape[1],), 
+                               fill_value=output_log_sm.shape[0], 
+                               dtype=torch.long).to(device)
     target_length = torch.sum(labels != -100, dim=1)
     # print (target_length)
 
@@ -521,14 +566,24 @@ def main():
     whisper_tokenizer = get_tokenizer(multilingual=".en" not in args.whisper_model, task="transcribe")
     hf_tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
 
+    model_args = {'embed_dim': WHISPER_DIM[args.whisper_model],
+                  'hidden_dim': 384,
+                  'output_dim': len(hf_tokenizer) + args.use_ctc_loss,
+                  'freeze_encoder': args.freeze_encoder}
 
-    multitask_model = AlignModel(whisper_model=whisper_model,
-                             embed_dim=WHISPER_DIM[args.whisper_model],
-                             output_dim=len(hf_tokenizer) + args.use_ctc_loss,
-                             freeze_encoder=args.freeze_encoder,
-                             train_alignment=True,
-                             train_transcribe=True,
-                             device=device).to(device)
+    multitask_model = AlignModel(
+        whisper_model=whisper_model,
+        embed_dim=model_args['embed_dim'],
+        hidden_dim=model_args['hidden_dim'],
+        output_dim=model_args['output_dim'],
+        freeze_encoder=model_args['freeze_encoder'],
+        train_alignment=True,
+        train_transcribe=True,
+        device=device
+    ).to(device)
+
+    with open(f"{args.save_dir}/model_args.json", 'w') as f:
+        json.dump(model_args, f, indent=4)
     
     optimizer = torch.optim.AdamW([{'params': multitask_model.align_rnn.parameters(), 'lr': args.lr,},
                                     {'params': multitask_model.whisper_model.parameters(), 'lr': args.lr / 1000}],
@@ -546,6 +601,8 @@ def main():
         whisper_tokenizer=whisper_tokenizer,
         language=args.language,
         no_timestamps=True,
+        use_ctc=args.use_ctc_loss,
+        use_v2_dataset=True,
         batch_size=args.train_batch_size,
         shuffle=True
     )
@@ -555,12 +612,21 @@ def main():
         whisper_tokenizer=whisper_tokenizer,
         language=args.language,
         no_timestamps=True,
+        use_ctc=args.use_ctc_loss,
+        use_v2_dataset=True,
         batch_size=args.dev_batch_size,
         shuffle=False
     )
 
+    # for train_data in args.train_data:
+    #     if 'opencpop' in train_data:
+    #         ce_word_weights = get_ce_weight(args.train_data[0],
+    #                                         hf_tokenizer).to(device)
+    #     else:
+    #         ce_word_weights = None
+
     loss_fn = {'ce_loss': nn.CrossEntropyLoss(),
-            'silence_ce_loss': nn.BCEWithLogitsLoss()}
+               'silence_ce_loss': nn.BCEWithLogitsLoss()}
 
     main_loop(
         model=multitask_model,
@@ -569,7 +635,8 @@ def main():
         optimizer=optimizer,
         scheduler=scheduler,
         loss_fn=loss_fn,
-        args=args
+        args=args,
+        get_orig_len=False,
     )
 
 

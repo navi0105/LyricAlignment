@@ -8,10 +8,11 @@ from torch.nn.utils.rnn import pad_sequence
 
 from whisper.tokenizer import Tokenizer
 from whisper import log_mel_spectrogram, pad_or_trim
-from whisper.audio import N_FRAMES
+from whisper.audio import N_FRAMES, load_audio
 
 from data_processor.record import read_data_from_json, read_data_from_csv
 
+from utils.audio import load_audio_file
 
 # ALIGNMENT DATASET
 class AlignmentDataset(Dataset):
@@ -23,13 +24,16 @@ class AlignmentDataset(Dataset):
     ) -> None:
         self.records = records
         self.tokenizer = tokenizer
+        self.use_ctc = use_ctc
 
 
     def _calculate_mel(
         self,
         audio_path: str,
     ) -> torch.Tensor:
-        mel = log_mel_spectrogram(audio_path)
+        audio = load_audio_file(audio_path)['speech']
+
+        mel = log_mel_spectrogram(audio)
         mel = pad_or_trim(mel, N_FRAMES)
 
         return mel
@@ -58,10 +62,12 @@ class AlignmentDataset(Dataset):
         lyric_word_onset_offset, 
         hop_size_second=0.02,
     ):
+        fill_value = -100 if self.use_ctc else 0
+        # fill_value = -100
         total_frame_num = max([lyric_word_onset_offset[i][-1][-1] for i in range(len(lyric_word_onset_offset))])
         total_frame_num = int(round(total_frame_num / hop_size_second)) + 1
 
-        frame_labels = torch.full((len(lyric_word_onset_offset), total_frame_num), -100)
+        frame_labels = torch.full((len(lyric_word_onset_offset), total_frame_num), fill_value)
 
         for i in range(len(lyric_word_onset_offset)):
             for j in range(len(lyric_word_onset_offset[i])):
@@ -72,7 +78,7 @@ class AlignmentDataset(Dataset):
         return frame_labels
 
     def collate_fn(self, data):
-        x, text, lyric_word_onset_offset = zip(*data)
+        x, text, lyric_onset_offset = zip(*data)
 
         x = pad_sequence(x, batch_first=True, padding_value=0)
 
@@ -85,15 +91,52 @@ class AlignmentDataset(Dataset):
         # y_text[y_text == 0] = -100
         # y_text[y_text == 102] = -100
 
-        frame_labels = self.get_frame_label(text_tokens, lyric_word_onset_offset)
+        frame_labels = self.get_frame_label(text_tokens, lyric_onset_offset)
         
-        return x, text_tokens, frame_labels, lyric_word_onset_offset
+        return x, text_tokens, frame_labels, lyric_onset_offset
+
+
+# ALIGNMENT DATASET FOR INFERENCE
+class InferenceAlignmentDataset(AlignmentDataset):
+    def __init__(
+        self,
+        records: List[Record],
+        tokenizer,
+        use_ctc: bool=False
+    ):
+        AlignmentDataset.__init__(self, 
+                                  records=records,
+                                  tokenizer=tokenizer,
+                                  use_ctc=use_ctc)
+        
+    def __getitem__(self, index):
+        record = self.records[index]
+
+        # audio = load_audio(record.audio_path, sr=16000)
+        audio = load_audio_file(record.audio_path)['speech']
+        text = record.text
+        lyric_onset_offset = record.lyric_onset_offset
+
+        return (audio, text, lyric_onset_offset)
+    
+    def collate_fn(self, data):
+        audio, text, lyric_onset_offset = zip(*data)
+
+        text_tokens = self.tokenizer(text, padding=True, return_tensors='pt')['input_ids'][:, 1:]
+        text_tokens[text_tokens == 0] = -100
+        text_tokens[text_tokens == 102] = -100
+
+        frame_labels = self.get_frame_label(text_tokens, lyric_onset_offset)
+
+        return audio, text_tokens, frame_labels, lyric_onset_offset
+        
 
 def get_alignment_dataloader(
     data_path: str,
     tokenizer,
     batch_size: int=1,
     use_ctc: bool=False,
+    is_inference: bool=False,
     shuffle: bool=False
     ) -> DataLoader:
     assert os.path.exists(data_path)
@@ -102,9 +145,14 @@ def get_alignment_dataloader(
     else:
         records = read_data_from_json(data_path)
 
-    dataset = AlignmentDataset(records=records,
-                               tokenizer=tokenizer,
-                               use_ctc=use_ctc)
+    if is_inference:
+        dataset = InferenceAlignmentDataset(records=records,
+                                            tokenizer=tokenizer,
+                                            use_ctc=use_ctc)
+    else:
+        dataset = AlignmentDataset(records=records,
+                                tokenizer=tokenizer,
+                                use_ctc=use_ctc)
     
     return DataLoader(
         dataset=dataset,
@@ -135,7 +183,9 @@ class TranscriptionDataset(Dataset):
         self,
         audio_path: str,
     ) -> torch.Tensor:
-        mel = log_mel_spectrogram(audio_path)
+        audio = load_audio_file(audio_path)['speech']
+
+        mel = log_mel_spectrogram(audio)
         mel = pad_or_trim(mel, N_FRAMES)
         if self.fp16:
             mel = mel.half()
@@ -231,13 +281,13 @@ class TranscriptionDataset(Dataset):
         )
 
     def collate_fn(self, data):
-        x, y_in, y_out = zip(*data)
+        mel, y_in, y_out = zip(*data)
         
-        x = pad_sequence(x, batch_first=True, padding_value=0)
+        mel = pad_sequence(mel, batch_first=True, padding_value=0)
         y_in = pad_sequence(y_in, batch_first=True, padding_value=0)
         y_out = pad_sequence(y_out, batch_first=True, padding_value=-100)
         
-        return x, y_in, y_out
+        return mel, y_in, y_out
     
 def get_transcript_dataloader(
     data_path: str,
@@ -293,6 +343,8 @@ class MultitaskDataset(Dataset):
         self,
         audio_path: str,
     ) -> torch.Tensor:
+        audio = load_audio_file(audio_path)['speech']
+
         mel = log_mel_spectrogram(audio_path)
         mel = pad_or_trim(mel, N_FRAMES)
 
@@ -434,9 +486,10 @@ class MultitaskDataset(Dataset):
         hop_size_second: float=0.02
     ):
         fill_value = -100 if self.use_ctc else 0
+        # fill_value = -100
 
         total_frame_num = int(round(lyric_word_onset_offset[-1][-1] / hop_size_second)) + 1
-        frame_labels = torch.full((total_frame_num,), fill_value=-100)
+        frame_labels = torch.full((total_frame_num,), fill_value=fill_value)
 
         for j in range(len(lyric_word_onset_offset)):
             onset_frame = int(round(lyric_word_onset_offset[j][0] / hop_size_second))
@@ -452,6 +505,7 @@ class MultitaskDataset(Dataset):
         hop_size_second: float=0.02
     ):
         fill_value = -100 if self.use_ctc else 0
+        # fill_value = -100
 
         total_frame_num = max([lyric_word_onset_offset[i][-1][-1] for i in range(len(lyric_word_onset_offset))])
         total_frame_num = int(round(total_frame_num / hop_size_second)) + 1
@@ -494,12 +548,91 @@ class MultitaskDataset(Dataset):
         return mel, align_text_tokens, frame_labels, lyric_onset_offset, decoder_input, decoder_output
 
 
+class MultitaskDatasetV2(MultitaskDataset):
+    def __init__(
+        self,
+        records: List[Record],
+        hf_tokenizer,
+        whisper_tokenizer: Tokenizer,
+        language: str='zh',
+        no_timestamps: bool=True,
+        use_ctc: bool=False
+    ):
+        MultitaskDataset.__init__(
+            self,
+            records=records,
+            hf_tokenizer=hf_tokenizer,
+            whisper_tokenizer=whisper_tokenizer,
+            language=language,
+            no_timestamps=no_timestamps,
+            use_ctc=use_ctc
+        )
+
+    def __getitem__(self, index):
+        record = self.records[index]
+
+        # audio = load_audio(record.audio_path, sr=16000)
+        audio = load_audio_file(record.audio_path)['speech']
+
+        # Alignment Data
+        align_text = record.text
+
+        if record.lyric_onset_offset is not None:     
+            lyric_onset_offset = record.lyric_onset_offset
+        else:
+            lyric_onset_offset = None
+
+        # Transcription Data
+        no_timestamps = self.no_timestamps
+        transcript_text_tokens = self._get_transcript_tokens(record, no_timestamps)
+        is_text_empty = len(transcript_text_tokens) == 0
+        special_tokens = self._get_special_tokens(is_text_empty, self.language, self.no_timestamps)
+
+        decoder_input = special_tokens + transcript_text_tokens
+        decoder_output = self._construct_decoder_output(special_tokens=special_tokens,
+                                                        text_tokens=transcript_text_tokens)
+        
+        return (
+            audio,
+            align_text,
+            lyric_onset_offset,
+            torch.tensor(decoder_input, dtype=torch.long),
+            torch.tensor(decoder_output, dtype=torch.long)
+        )
+    
+    def collate_fn(self, data):
+        audio, align_text, lyric_onset_offset, decoder_input, decoder_output = zip(*data)
+
+        # Align Token
+        align_text_tokens = self.hf_tokenizer(align_text, 
+                                              padding=True, 
+                                              return_tensors='pt')['input_ids'][:, 1:]
+        # align_text = pad_sequence(align_text, batch_first=True, padding_value=0)
+        align_text_tokens[align_text_tokens == 0] = -100
+        align_text_tokens[align_text_tokens == 102] = -100
+
+        frame_labels = []
+        for i in range(len(data)):
+            if lyric_onset_offset[i] is not None:
+                frame_labels.append(self.get_frame_label(align_text_tokens[i], lyric_onset_offset[i]))
+            else:
+                frame_labels.append(None)
+        # frame_labels = self.batch_get_frame_label(align_text_tokens, lyric_onset_offset)
+        
+        # Transcript Token
+        decoder_input = pad_sequence(decoder_input, batch_first=True, padding_value=0)
+        decoder_output = pad_sequence(decoder_output, batch_first=True, padding_value=-100)
+
+        return audio, align_text_tokens, frame_labels, lyric_onset_offset, decoder_input, decoder_output
+
 def get_multitask_dataloader(
     *data_paths,
     hf_tokenizer,
     whisper_tokenizer: Tokenizer,
     language: str='zh',
     no_timestamps: bool=True,
+    use_ctc: bool=False,
+    use_v2_dataset: bool=False,
     batch_size: int=1,
     shuffle: bool=False
 ):
@@ -511,13 +644,24 @@ def get_multitask_dataloader(
         else:
             records.extend(read_data_from_json(path))
 
-    dataset = MultitaskDataset(
-        records=records,
-        hf_tokenizer=hf_tokenizer,
-        whisper_tokenizer=whisper_tokenizer,
-        language=language,
-        no_timestamps=no_timestamps
-    )
+    if use_v2_dataset:
+        dataset = MultitaskDatasetV2(
+            records=records,
+            hf_tokenizer=hf_tokenizer,
+            whisper_tokenizer=whisper_tokenizer,
+            language=language,
+            no_timestamps=no_timestamps,
+            use_ctc=use_ctc
+        )
+    else:
+        dataset = MultitaskDataset(
+            records=records,
+            hf_tokenizer=hf_tokenizer,
+            whisper_tokenizer=whisper_tokenizer,
+            language=language,
+            no_timestamps=no_timestamps,
+            use_ctc=use_ctc
+        )
 
     # ce_weights = dataset.compute_weight()
 

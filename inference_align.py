@@ -2,10 +2,10 @@ import os
 import json
 import argparse
 import random
+import itertools
 import numpy as np
 from typing import Iterator, Tuple, Optional
 from tqdm import tqdm
-import copy
 from pathlib import Path
 from pypinyin import lazy_pinyin, Style
 
@@ -14,10 +14,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 import whisper
+from whisper.audio import log_mel_spectrogram
+from whisper.tokenizer import get_tokenizer
 from transformers import AutoTokenizer, get_linear_schedule_with_warmup
 
 from module.align_model import AlignModel
-from dataset import get_alignment_dataloader, get_transcript_dataloader
+from dataset import get_alignment_dataloader, get_multitask_dataloader
 from utils.alignment import perform_viterbi, perform_viterbi_sil, get_mae
 
 os.environ["TOKENIZERS_PARALLELISM"]="false"
@@ -36,13 +38,19 @@ def parse_args():
         default=None
     )
     parser.add_argument(
+        '--model-name',
+        choices=['best', 'best_align', 'best_trans', 'last'],
+        default='best'
+    )
+    parser.add_argument(
         '--batch-size',
         type=int,
         default=16
     )
     parser.add_argument(
         '--predict-sil',
-        action='store_true',
+        type=bool,
+        default=False,
         help='set this flag for model trained with ctc loss'
     )
     parser.add_argument(
@@ -63,7 +71,7 @@ def parse_args():
     args = parser.parse_args()
     return args
 
-whisper_dim = {'tiny': 384,
+WHISPER_DIM = {'tiny': 384,
                'base': 512,
                'small': 768,
                'medium': 1024,
@@ -75,23 +83,42 @@ def set_seed(seed: int):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
 
-def load_align_model(
-    model_path: Optional[str],
-    whisper_model_name: str,
-    text_output_dim: int,
+def load_align_model_and_tokenizer(
+    model_dir: str,
+    args,
     device: str='cuda'
 ) -> AlignModel:
+    assert os.path.exists(model_dir)
+    with open(os.path.join(model_dir, 'args.json'), 'r') as f:
+        train_args = json.load(f)
+    tokenizer_name = train_args['tokenizer']
+    whisper_model_name = train_args['whisper_model']
+    model_path = os.path.join(model_dir, 'best_model.pt')
+
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+
     whisper_model = whisper.load_model(whisper_model_name, device=device)
+
+    if os.path.exists(os.path.join(model_dir, 'model_args.json')):
+        with open(os.path.join(model_dir, 'model_args.json'), 'r') as f:
+            model_args = json.load(f)
+    else:
+        model_args = {'embed_dim': WHISPER_DIM[whisper_model_name],
+                      'hidden_dim': 384,
+                      'output_dim': len(tokenizer) + args.predict_sil,}
+
     model = AlignModel(whisper_model=whisper_model,
-                       embed_dim=whisper_dim[whisper_model_name],
-                       output_dim=text_output_dim,
+                       embed_dim=model_args['embed_dim'],
+                       hidden_dim=model_args['hidden_dim'],
+                       output_dim=model_args['output_dim'],
                        device=device)
     
     if model_path is not None:
         state_dict = torch.load(model_path, map_location=device)
         model.load_state_dict(state_dict=state_dict)
     
-    return model
+    return model, tokenizer
+
 
 def get_pinyin_table(tokenizer):
     def handle_error(chars):
@@ -153,7 +180,7 @@ def pypinyin_reweight(
                 # print (selected.shape)
                 cur_max = torch.max(selected)
 
-                logits[i][j][cur_value_list] = (cur_max + logits[i][j][cur_value_list]) / 2.0
+                logits[i][j][cur_value_list] = (cur_max * 4.0 + logits[i][j][cur_value_list]) / 5.0
 
     return logits
 
@@ -166,21 +193,20 @@ def align_and_evaluate(
     use_pypinyin: bool=False,
     device: str='cuda'
 ):
-    total_mae = 0
-    model.eval()
-    model.to(device)
-    pbar = tqdm(test_dataloader)
-
     if use_pypinyin:
         print('Use Pypinyin to reweight, building pinyin table...')
         token_pinyin, pinyin_reverse = get_pinyin_table(tokenizer)
         print('Done.')
 
-    for batch in pbar:
-        mel, tokens, _, lyric_word_onset_offset = batch
-        mel = mel.to(device)
+    total_mae = 0
+    model.eval()
+    model.to(device)
+    pbar = tqdm(test_dataloader)
 
-        align_logits, _ = model(mel)
+    for batch in pbar:
+        audios, tokens, _, lyric_word_onset_offset, _, _ = batch
+
+        align_logits, _ = model.frame_manual_forward(audios)
 
         align_logits = align_logits.cpu()
         if use_pypinyin:
@@ -190,6 +216,10 @@ def align_and_evaluate(
             align_results = perform_viterbi_sil(align_logits, tokens)
         else:
             align_results = perform_viterbi(align_logits, tokens)
+        
+        # print(align_logits)
+        # print(lyric_word_onset_offset)
+        # print(align_results)
         mae = get_mae(lyric_word_onset_offset, align_results)
         pbar.set_postfix({"current MAE": mae})
 
@@ -209,30 +239,25 @@ def main():
         device = 'cpu'
 
     # Load Tokenizer, Model
-    if args.model_dir is not None:
-        assert os.path.exists(args.model_dir)
-        with open(os.path.join(args.model_dir, 'args.json'), 'r') as f:
-            model_args = json.load(f)
-        tokenizer_name = model_args['tokenizer']
-        whisper_model_name = model_args['whisper_model']
-        model_path = os.path.join(args.model_dir, 'best_model.pt')
-    else:
-        tokenizer_name = 'bert-base-chinese'
-        whisper_model_name = 'base'
-        model_path = None
-    
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
-    model = load_align_model(model_path=model_path,
-                             whisper_model_name=whisper_model_name,
-                             text_output_dim=len(tokenizer) + args.predict_sil,
-                             device=device)
+    assert os.path.exists(args.model_dir)
+    model, tokenizer = load_align_model_and_tokenizer(args.model_dir, args)
+    whisper_tokenizer = get_tokenizer(multilingual=True, task='transcribe')
     
     assert os.path.exists(args.test_data)
-    test_dataloader = get_alignment_dataloader(data_path=args.test_data,
-                                                tokenizer=tokenizer,
-                                                batch_size=args.batch_size,
-                                                use_ctc=args.predict_sil,
-                                                shuffle=False)
+    # test_dataloader = get_alignment_dataloader(data_path=args.test_data,
+    #                                             tokenizer=tokenizer,
+    #                                             batch_size=args.batch_size,
+    #                                             use_ctc=args.predict_sil,
+    #                                             is_inference=True,
+    #                                             shuffle=False)
+
+    test_dataloader = get_multitask_dataloader(args.test_data,
+                                               hf_tokenizer=tokenizer,
+                                               whisper_tokenizer=whisper_tokenizer,
+                                               use_ctc=args.predict_sil,
+                                               use_v2_dataset=True,
+                                               batch_size=args.batch_size,
+                                               shuffle=False)
     
     align_and_evaluate(model=model,
                        tokenizer=tokenizer,

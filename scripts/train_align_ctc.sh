@@ -13,10 +13,10 @@ python train_alignment_ctc.py \
     --train-batch-size 2 \
     --accum-grad-steps 8 \
     --dev-batch-size 8 \
-    --lr 1e-3 \
-    --train-steps 2000 \
+    --lr 5e-3 \
+    --train-steps 1000 \
     --eval-steps 100 \
-    --warmup-steps 200 \
+    --warmup-steps 100 \
     --save-dir ${align_model_dir}
 
 # Inference Alignment

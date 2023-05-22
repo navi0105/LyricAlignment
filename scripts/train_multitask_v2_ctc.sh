@@ -20,10 +20,11 @@ python train_multitask_v2.py \
     --train-batch-size 2 \
     --dev-batch-size 8 \
     --accum-grad-steps 8 \
+    --use-ctc-loss \
     --lr 5e-3 \
-    --train-steps 4000 \
+    --train-steps 3500 \
     --eval-steps 100 \
-    --warmup-steps 400 \
+    --warmup-steps 350 \
     --save-dir ${multitask_model_dir}
 
 # Inference Transcript
@@ -46,6 +47,7 @@ python inference_transcript.py \
 python inference_align.py \
     -f ${multitask_dev} \
     --model-dir ${multitask_model_dir} \
+    --predict-sil true
     --use-pypinyin
 
 python evaluate_transcript.py \

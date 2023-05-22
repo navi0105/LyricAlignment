@@ -1,5 +1,5 @@
 import numpy as np
-
+from pypinyin import lazy_pinyin, Style
 
 def CER(hypothesis: list, reference: list):
     len_hyp = len(hypothesis)
@@ -75,6 +75,29 @@ def CER(hypothesis: list, reference: list):
     # print(nb_map)
     # print("match_idx: %s" % str(match_idx))
     return cer, nb_map
+
+def PER(hypothesis, reference):
+    hypothesis_phoneme_initial = lazy_pinyin(hypothesis, style=Style.INITIALS, strict=False)
+    hypothesis_phoneme_final = lazy_pinyin(hypothesis, style=Style.FINALS, strict=False)
+    hypothesis_phoneme = []
+
+    for i in range(len(hypothesis_phoneme_initial)):
+        hypothesis_phoneme.append(hypothesis_phoneme_initial[i])
+        hypothesis_phoneme.append(hypothesis_phoneme_final[i])
+
+
+    target_phoneme_initial = lazy_pinyin(reference, style=Style.INITIALS, strict=False)
+    target_phoneme_final = lazy_pinyin(reference, style=Style.FINALS, strict=False)
+    target_phoneme = []
+
+    for i in range(len(target_phoneme_initial)):
+        target_phoneme.append(target_phoneme_initial[i])
+        target_phoneme.append(target_phoneme_final[i])
+
+    per, per_nb_map = CER(hypothesis=hypothesis_phoneme,
+                        reference=target_phoneme)
+
+    return per, per_nb_map
 
 
 def main():

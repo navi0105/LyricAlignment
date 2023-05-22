@@ -58,7 +58,6 @@ def read_data_from_csv(data_path):
 
 def read_data_from_json(
         data_path: str,
-        get_onset_offset: bool=True
     ) -> List[Record]:
     assert os.path.exists(data_path)
     with open(data_path, 'r') as f:
@@ -69,7 +68,7 @@ def read_data_from_json(
         record = Record(audio_path=data['song_path'],
                         text=data['lyric'])
             
-        if get_onset_offset:
+        if 'note_dur' in data or 'lyric_onset_offset' in data:
             if 'lyric_onset_offset' in data:
                 record.lyric_onset_offset = data['lyric_onset_offset']
             else:

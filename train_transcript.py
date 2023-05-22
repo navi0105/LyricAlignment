@@ -3,9 +3,9 @@ import json
 import argparse
 import random
 import numpy as np
-from typing import Iterator, Tuple, Optional
+from typing import Iterator, Tuple
 from tqdm import tqdm
-import copy
+import itertools
 from pathlib import Path
 
 import torch
@@ -13,11 +13,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 import whisper
+from whisper.audio import log_mel_spectrogram, pad_or_trim, N_FRAMES
 from whisper.tokenizer import get_tokenizer
 from transformers import AutoTokenizer, get_linear_schedule_with_warmup
 
 from module.align_model import AlignModel
-from dataset import get_transcript_dataloader
+from dataset import get_transcript_dataloader, get_multitask_dataloader
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -25,12 +26,12 @@ def parse_args():
     # Data Argument
     parser.add_argument(
         '--train-data',
-        type=str,
+        nargs='+',
         required=True
     )
     parser.add_argument(
         '--dev-data',
-        type=str
+        nargs='+'
     )
 
     # Model Argument
@@ -156,19 +157,28 @@ def infinite_iter(data_loader: DataLoader) -> Iterator:
         for batch in data_loader:
             yield batch
 
-def load_align_model(
-    model_path: Optional[str],
-    whisper_model_name: str,
-    text_output_dim: int,
-    freeze_encoder: bool=False,
+def load_model(
+    model_dir: str,
+    args,
     device: str='cuda'
 ) -> AlignModel:
+    assert os.path.exists(model_dir)
+    with open(os.path.join(model_dir, 'args.json'), 'r') as f:
+        model_args = json.load(f)
+
+    tokenizer_name = model_args['tokenizer']
+    whisper_model_name = model_args['whisper_model']
+    model_path = os.path.join(model_dir, 'best_model.pt')
+
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+    whisper_tokenizer = get_tokenizer(multilingual='.en' not in whisper_model_name,
+                                      task='transcribe')
     whisper_model = whisper.load_model(whisper_model_name, device=device)
     
     model = AlignModel(whisper_model=whisper_model,
                        embed_dim=WHISPER_DIM[whisper_model_name],
-                       output_dim=text_output_dim,
-                       freeze_encoder=freeze_encoder,
+                       output_dim=len(tokenizer) + model_args['use_ctc_loss'],
+                       freeze_encoder=True,
                        train_alignment=False,
                        train_transcribe=True,
                        device=device)
@@ -177,7 +187,10 @@ def load_align_model(
         state_dict = torch.load(model_path, map_location=device)
         model.load_state_dict(state_dict=state_dict)
     
-    return model
+    args.tokenizer = tokenizer_name
+    args.whisper_model = whisper_model_name
+
+    return model, tokenizer, whisper_tokenizer, args
 
 def train_step(
     model: AlignModel,
@@ -192,14 +205,19 @@ def train_step(
 
     for _ in range(accum_grad_steps):
         # mel, y_text, frame_labels, lyric_word_onset_offset
-        mel, y_in, y_out = next(train_iter)
-        mel, y_in, y_out = mel.to(model.device), y_in.to(model.device), y_out.to(model.device)
+        audios, _, _, _, decoder_input, decoder_output = next(train_iter)
+        decoder_input, decoder_output = decoder_input.to(model.device), decoder_output.to(model.device)
+
+        audios = np.stack((itertools.zip_longest(*audios, fillvalue=0)), axis=1).astype('float32')
+        mel = log_mel_spectrogram(audios).to(model.device)
+        mel = pad_or_trim(mel, N_FRAMES)
 
         # Align Logits Shape: [batch size, time length, number of classes] => (N, T, C)
         # align_logits, transcribe_logits
-        _, transcribe_logits = model(mel, y_in)
+        _, transcribe_logits = model(mel, decoder_input)
 
-        transcribe_loss = F.cross_entropy(transcribe_logits.permute(0, 2, 1), y_out)
+        transcribe_loss = F.cross_entropy(transcribe_logits.permute(0, 2, 1),
+                                          decoder_output)
 
         loss = transcribe_loss / accum_grad_steps
         loss.backward()
@@ -222,14 +240,18 @@ def evaluate(
     total_loss = 0
 
     # mel, y_text, frame_labels, lyric_word_onset_offset
-    for mel, y_in, y_out in tqdm(dev_loader):
-        mel, y_in, y_out = mel.to(model.device), y_in.to(model.device), y_out.to(model.device)
+    for batch in tqdm(dev_loader):
+        audios, _, _, _, decoder_input, decoder_output = batch
+        decoder_input, decoder_output = decoder_input.to(model.device), decoder_output.to(model.device)
 
+        audios = np.stack((itertools.zip_longest(*audios, fillvalue=0)), axis=1).astype('float32')
+        mel = log_mel_spectrogram(audios).to(model.device)
+        mel = pad_or_trim(mel, N_FRAMES)
         # Align Logits Shape: [batch size, time length, number of classes] => (N, T, C)
         # align_logits, transcribe_logits
-        _, transcribe_logits = model(mel, y_in)
+        _, transcribe_logits = model(mel, decoder_input)
         
-        transcribe_loss = F.cross_entropy(transcribe_logits.permute(0, 2, 1), y_out)
+        transcribe_loss = F.cross_entropy(transcribe_logits.permute(0, 2, 1), decoder_output)
 
         total_loss += transcribe_loss.item()
 
@@ -247,7 +269,7 @@ def main_loop(
 ) -> None:
     min_loss = evaluate(model, dev_loader)
     avg_train_loss = 0
-
+    
     print(f"Initial loss: {min_loss}")
     pbar = tqdm(range(1, args.train_steps + 1))
     train_iter = infinite_iter(train_loader)
@@ -291,6 +313,7 @@ def main():
     args = parse_args()
     set_seed(args.seed)
     torch.backends.cudnn.benchmark = False
+    Path(args.save_dir).mkdir(parents=True, exist_ok=True)
 
     device = args.device
     if 'cuda' in device and torch.cuda.is_available() == False:
@@ -298,53 +321,59 @@ def main():
 
     if args.align_model_dir is not None:
         assert os.path.exists(args.align_model_dir)
-        with open(os.path.join(args.align_model_dir, 'args.json'), 'r') as f:
-            model_args = json.load(f)
-        args.tokenizer = model_args['tokenizer']
-        args.whisper_model = model_args['whisper_model']
-        model_path = os.path.join(args.align_model_dir, 'best_model.pt')
+        model, hf_tokenizer, whisper_tokenizer, args = load_model(
+            model_dir=args.align_model_dir,
+            args=args,
+            device=device
+        )
+        
+        # save_args(model_args, f"{args.save_dir}/args.json")
     else:
-        model_path = None
-
-    Path(args.save_dir).mkdir(parents=True, exist_ok=True)
-    save_args(args, f"{args.save_dir}/args.json")
-
-    hf_tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
-    whisper_tokenizer = get_tokenizer(multilingual=".en" not in args.whisper_model, task="transcribe")
+        hf_tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
+        whisper_tokenizer = get_tokenizer(multilingual=".en" not in args.whisper_model, task="transcribe")
+        whisper_model = whisper.load_model(args.whisper_model,
+                                           device=device)
+        model = AlignModel(whisper_model=whisper_model,
+                           embed_dim=WHISPER_DIM[args.whisper_model],
+                           output_dim=len(hf_tokenizer),
+                           freeze_encoder=args.freeze_encoder,
+                           train_alignment=False,
+                           train_transcribe=True,
+                           device=device)
     
-    model = load_align_model(model_path=model_path,
-                             whisper_model_name=args.whisper_model,
-                             text_output_dim=len(hf_tokenizer),
-                             freeze_encoder=args.freeze_encoder,
-                             device=device)
+    
+    save_args(args, f"{args.save_dir}/args.json")
+    
+
+    print('freeze encoder', model.freeze_encoder)
     model.to(device)
     # Move rnn to cpu for reduce Vram usage
     model.align_rnn.to('cpu')
 
-    optimizer = torch.optim.Adam(model.whisper_model.parameters(),
+    optimizer = torch.optim.AdamW(model.whisper_model.parameters(),
                                   lr=args.lr,
                                   weight_decay=2e-5)
 
 
-    scheduler = scheduler = get_linear_schedule_with_warmup(
+    scheduler = get_linear_schedule_with_warmup(
         optimizer, num_warmup_steps=args.warmup_steps, num_training_steps=args.train_steps
     )
 
-    train_dataloader = get_transcript_dataloader(data_path=args.train_data,
-                                                 tokenizer=whisper_tokenizer,
-                                                 language='zh',
-                                                 no_timestamps=args.no_timestamps,
-                                                 batch_size=args.train_batch_size,
-                                                 fp16=args.fp16,
-                                                 shuffle=True)
+    train_dataloader = get_multitask_dataloader(*args.train_data,
+                                                hf_tokenizer=hf_tokenizer,
+                                                whisper_tokenizer=whisper_tokenizer,
+                                                no_timestamps=args.no_timestamps,
+                                                use_v2_dataset=True,
+                                                batch_size=args.train_batch_size,
+                                                shuffle=True)
     
-    dev_dataloader = get_transcript_dataloader(data_path=args.dev_data,
-                                                 tokenizer=whisper_tokenizer,
-                                                 language='zh',
-                                                 no_timestamps=args.no_timestamps,
-                                                 batch_size=args.dev_batch_size,
-                                                 fp16=args.fp16,
-                                                 shuffle=True)
+    dev_dataloader = get_multitask_dataloader(*args.dev_data,
+                                                hf_tokenizer=hf_tokenizer,
+                                                whisper_tokenizer=whisper_tokenizer,
+                                                no_timestamps=args.no_timestamps,
+                                                use_v2_dataset=True,
+                                                batch_size=args.train_batch_size,
+                                                shuffle=True)
     
     main_loop(
         model=model,

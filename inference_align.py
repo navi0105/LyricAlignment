@@ -50,7 +50,7 @@ def parse_args():
     parser.add_argument(
         '--predict-sil',
         type=bool,
-        default=False,
+        default=True,
         help='set this flag for model trained with ctc loss'
     )
     parser.add_argument(
@@ -105,12 +105,16 @@ def load_align_model_and_tokenizer(
     else:
         model_args = {'embed_dim': WHISPER_DIM[whisper_model_name],
                       'hidden_dim': 384,
+                      'bidirectional': True,
                       'output_dim': len(tokenizer) + args.predict_sil,}
+
+    bidirectional = model_args.get('bidirectional', True)
 
     model = AlignModel(whisper_model=whisper_model,
                        embed_dim=model_args['embed_dim'],
                        hidden_dim=model_args['hidden_dim'],
                        output_dim=model_args['output_dim'],
+                       bidirectional=bidirectional,
                        device=device)
     
     if model_path is not None:

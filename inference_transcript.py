@@ -32,6 +32,10 @@ def parse_args():
         help="Whisper model name or path"
     )
     parser.add_argument(
+        '--use-pretrained',
+        action='store_true'
+    )
+    parser.add_argument(
         "--language",
         type=str,
         default='zh',
@@ -142,12 +146,16 @@ def load_align_model(
     else:
         model_args = {'embed_dim': WHISPER_DIM[whisper_model_name],
                       'hidden_dim': 384,
+                      'bidirectional': True,
                       'output_dim': len(tokenizer) + args.predict_sil,}
+
+    bidirectional = model_args.get('bidirectional', True)
 
     model = AlignModel(whisper_model=whisper_model,
                        embed_dim=model_args['embed_dim'],
                        hidden_dim=model_args['hidden_dim'],
                        output_dim=model_args['output_dim'],
+                       bidirectional=bidirectional,
                        device=device)
     
     if model_path is not None:
@@ -157,15 +165,24 @@ def load_align_model(
     return model
 
 def main():
+    overwrite_output = False
     args = parse_args()
+    if os.path.exists(args.output) and overwrite_output == False:
+        print("File Exists, Pass")
+        exit()
+
     device = args.device
     if device == 'cuda' and torch.cuda.is_available() != True:
         device = 'cpu'
 
-    assert os.path.exists(args.model_dir)
-    transcribe_model = load_align_model(model_dir=args.model_dir,
-                                        args=args,
-                                        device=device).whisper_model
+    if os.path.exists(args.model_dir) and args.use_pretrained != True:
+        transcribe_model = load_align_model(model_dir=args.model_dir,
+                                            args=args,
+                                            device=device).whisper_model
+    else:
+        print('Use pretrained model')
+        transcribe_model = whisper.load_model(name='medium',
+                                              device=device)
     
     transcribe_model.to(device)
 

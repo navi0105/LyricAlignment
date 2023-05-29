@@ -1,26 +1,30 @@
-align_train=${1}
-align_dev=${2}
+multitask_train=${1}
+multitask_dev=${2}
 
-whipser_model=${3}
-align_model_dir=${4}
+transcript_train=${3}
+transcript_dev=${4}
 
-# Train Alignment
-python train_alignment_ctc.py \
-    --train-data ${align_train} \
-    --dev-data ${align_dev} \
+whipser_model=${5}
+
+multitask_model_dir=${6}
+
+mkdir -p ${multitask_model_dir}
+cp ${0} ${multitask_model_dir}
+
+# Train multitask
+python train_multitask_v3.py \
+    --train-data ${multitask_train} ${transcript_train} \
+    --dev-data ${multitask_dev} ${transcript_dev}\
     --whisper-model ${whipser_model} \
     --device cuda \
     --train-batch-size 2 \
-    --accum-grad-steps 8 \
     --dev-batch-size 8 \
+    --accum-grad-steps 8 \
+    --use-ctc-loss \
     --lr 5e-3 \
-    --train-steps 1000 \
+    --train-steps 2000 \
     --eval-steps 100 \
-    --warmup-steps 100 \
-    --save-dir ${align_model_dir}
+    --warmup-steps 200 \
+    --save-dir ${multitask_model_dir} | tee ${multitask_model_dir}/log.txt
 
-# Inference Alignment
-python inference_align.py \
-    -f ${align_dev} \
-    --model-dir ${align_model_dir} \
-    --predict_sil
+bash scripts/evaluate_benchmark.sh ${multitask_model_dir} true | tee -a ${multitask_model_dir}/log.txt

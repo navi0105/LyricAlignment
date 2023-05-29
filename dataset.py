@@ -12,7 +12,7 @@ from whisper.audio import N_FRAMES, load_audio
 
 from data_processor.record import read_data_from_json, read_data_from_csv
 
-from utils.audio import load_audio_file
+from utils.audio import load_audio_file, load_MIR1k_audio_file
 
 # ALIGNMENT DATASET
 class AlignmentDataset(Dataset):
@@ -556,7 +556,8 @@ class MultitaskDatasetV2(MultitaskDataset):
         whisper_tokenizer: Tokenizer,
         language: str='zh',
         no_timestamps: bool=True,
-        use_ctc: bool=False
+        use_ctc: bool=False,
+        is_mir1k: int=0
     ):
         MultitaskDataset.__init__(
             self,
@@ -567,12 +568,21 @@ class MultitaskDatasetV2(MultitaskDataset):
             no_timestamps=no_timestamps,
             use_ctc=use_ctc
         )
+        self.is_mir1k = is_mir1k
 
     def __getitem__(self, index):
         record = self.records[index]
 
         # audio = load_audio(record.audio_path, sr=16000)
-        audio = load_audio_file(record.audio_path)['speech']
+        if self.is_mir1k == 0:
+            audio = load_audio_file(record.audio_path)['speech']
+        elif self.is_mir1k == 1:
+            audio = load_MIR1k_audio_file(record.audio_path, mixture=True)['speech']
+        elif self.is_mir1k == 2:
+            audio = load_MIR1k_audio_file(record.audio_path, mixture=False)['speech']
+        else:
+            raise ValueError
+
 
         # Alignment Data
         align_text = record.text
@@ -633,6 +643,7 @@ def get_multitask_dataloader(
     no_timestamps: bool=True,
     use_ctc: bool=False,
     use_v2_dataset: bool=False,
+    is_mir1k: int=0,
     batch_size: int=1,
     shuffle: bool=False
 ):
@@ -651,6 +662,7 @@ def get_multitask_dataloader(
             whisper_tokenizer=whisper_tokenizer,
             language=language,
             no_timestamps=no_timestamps,
+            is_mir1k=is_mir1k,
             use_ctc=use_ctc
         )
     else:

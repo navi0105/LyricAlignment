@@ -17,41 +17,15 @@ python train_multitask.py \
     --dev-data ${multitask_dev} \
     --whisper-model ${whipser_model} \
     --device cuda \
-    --use-ctc-loss \
     --train-batch-size 2 \
     --dev-batch-size 8 \
     --accum-grad-steps 8 \
-    --lr 1e-3 \
-    --train-steps 2500 \
+    --freeze-encoder \
+    --use-ctc-loss \
+    --lr 5e-3 \
+    --train-steps 2000 \
     --eval-steps 100 \
     --warmup-steps 200 \
-    --save-dir ${multitask_model_dir} || exit 1;
+    --save-dir ${multitask_model_dir} | tee ${multitask_model_dir}/log.txt
 
-# Inference Transcript
-result_1=${multitask_model_dir}/result_opencpop_test.json
-result_2=${multitask_model_dir}/result_opensinger_test.json
-
-python inference_transcript.py \
-    -f ${multitask_dev} \
-    --model-dir ${multitask_model_dir} \
-    --device cuda \
-    --output ${result_1}
-
-python inference_transcript.py \
-    -f ${transcript_dev} \
-    --model-dir ${multitask_model_dir} \
-    --device cuda \
-    --output ${result_2}
-
-# Evaluate
-python inference_align.py \
-    -f ${multitask_dev} \
-    --model-dir ${multitask_model_dir} \
-    --predict-sil \
-    --use-pypinyin
-
-python evaluate_transcript.py \
-    -f ${result_1}
-
-python evaluate_transcript.py \
-    -f ${result_2}
+bash scripts/evaluate_benchmark.sh ${multitask_model_dir} true | tee -a ${multitask_model_dir}/log.txt

@@ -28,6 +28,7 @@ python inference_transcript.py \
     --model-dir ${model_dir} \
     -o ${model_dir}/result_opencpop_test.json
 echo "Opencpop Test"
+python utils/postprocess.py -f ${model_dir}/result_opencpop_test.json
 python evaluate_transcript.py -f ${model_dir}/result_opencpop_test.json
 
 python inference_transcript.py \
@@ -35,6 +36,7 @@ python inference_transcript.py \
     --model-dir ${model_dir} \
     -o ${model_dir}/result_opensinger_test.json
 echo "OpenSinger Test"
+python utils/postprocess.py -f ${model_dir}/result_opensinger_test.json
 python evaluate_transcript.py -f ${model_dir}/result_opensinger_test.json
 
 python inference_transcript.py \
@@ -42,6 +44,7 @@ python inference_transcript.py \
     --model-dir ${model_dir} \
     -o ${model_dir}/result_mpop600_test.json
 echo "MPOP600 Test"
+python utils/postprocess.py -f ${model_dir}/result_mpop600_test.json
 python evaluate_transcript.py -f ${model_dir}/result_mpop600_test.json
 
 ## MIR-1k mixture
@@ -51,6 +54,7 @@ python inference_transcript.py \
     --is-mir1k 1 \
     -o ${model_dir}/result_mir1k_mixture.json
 echo "MIR-1k Mixture"
+python utils/postprocess.py -f ${model_dir}/result_mir1k_mixture.json
 python evaluate_transcript.py -f ${model_dir}/result_mir1k_mixture.json
 
 ## MIR-1k voice
@@ -60,6 +64,7 @@ python inference_transcript.py \
     --is-mir1k 2 \
     -o ${model_dir}/result_mir1k_voice.json
 echo "MIR-1k Voice"
+python utils/postprocess.py -f ${model_dir}/result_mir1k_voice.json
 python evaluate_transcript.py -f ${model_dir}/result_mir1k_voice.json
 
 ## MIR-1k demucs
@@ -68,6 +73,7 @@ python inference_transcript.py \
     --model-dir ${model_dir} \
     -o ${model_dir}/result_mir1k_demucs.json
 echo "MIR-1k demucs"
+python utils/postprocess.py -f ${model_dir}/result_mir1k_demucs.json
 python evaluate_transcript.py -f ${model_dir}/result_mir1k_demucs.json
 
 

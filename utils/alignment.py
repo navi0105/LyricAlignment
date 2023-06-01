@@ -1,3 +1,6 @@
+import numpy as np
+from pypinyin import lazy_pinyin, Style
+
 import torch
 import torch.nn.functional as F
 from typing import List
@@ -215,66 +218,122 @@ def get_mae(gt, predict):
     error = error / cnt
     return error
 
-def get_mae_v2(gt, predict):
-    error = 0.0
-    cnt = 0
-    for i in range(len(gt)):
-        for j in range(min(len(gt[i]), len(predict[i]))):
-            error = error + abs(gt[i][j][0] - predict[i][j][0]) + abs(gt[i][j][1] - predict[i][j][1])
-            cnt = cnt + 2.0
+def get_pinyin_table(tokenizer):
+    def handle_error(chars):
+        return ['bad', 'bad']
 
-    error = error / cnt
-    return error
+    tokens = tokenizer.convert_ids_to_tokens(np.arange(0, len(tokenizer), 1).astype(int))
+    # print (tokens)
+    token_pinyin = []
+    pinyin_reverse = {}
+    for i in range(len(tokens)):
+        try:
+            cur_pinyin = lazy_pinyin(tokens[i], style=Style.NORMAL, errors=handle_error)
+        except:
+            cur_pinyin = ['bad', 'bad']
+        if len(cur_pinyin) == 1:
+            token_pinyin.append(cur_pinyin[0])
+            if cur_pinyin[0] not in pinyin_reverse.keys():
+                pinyin_reverse[cur_pinyin[0]] = [i,]
+            else:
+                pinyin_reverse[cur_pinyin[0]].append(i)
+        else:
+            token_pinyin.append('bad')
 
+    return token_pinyin, pinyin_reverse
 
-def batch_get_frame_label(
-        lyric_tokens,
-        lyric_word_onset_offset,
-        hop_size_second: float=0.02
-    ):
-        fill_value = -100
-        # fill_value = -100
-
-        total_frame_num = max([lyric_word_onset_offset[i][-1][-1] for i in range(len(lyric_word_onset_offset))])
-        total_frame_num = int(round(total_frame_num / hop_size_second)) + 1
-
-        frame_labels = torch.full((len(lyric_word_onset_offset), total_frame_num), fill_value=fill_value)
-
-        for i in range(len(lyric_word_onset_offset)):
-            for j in range(len(lyric_word_onset_offset[i])):
-                onset_frame = int(round(lyric_word_onset_offset[i][j][0] / hop_size_second))
-                offset_frame = int(round(lyric_word_onset_offset[i][j][1] / hop_size_second)) + 1
-                frame_labels[i][onset_frame: offset_frame] = lyric_tokens[i][j]
-
-        return frame_labels
-
-def get_ce_weight(
-    data_path: str,
-    tokenizer,
+def pypinyin_reweight(
+    logits: torch.Tensor,
+    labels,
+    token_pinyin,
+    pinyin_reverse,
 ):
-    records = read_data_from_json(data_path)
-    freq = torch.full((len(tokenizer),), 0.001)
-    for i in range(len(records)):
-        if not hasattr(records[i], "lyric_onset_offset"):
-            continue
+    pinyin_reverse_keys = list(pinyin_reverse.keys())
 
-        target_transcription = [records[i].text]
-        labels = tokenizer(target_transcription, 
-                           padding=True, 
-                           return_tensors="pt").input_ids[:,1:]
+    cur_same_pronun_token = []
+    for k in range(len(pinyin_reverse_keys)):
+        cur_same_pronun_token.append(torch.tensor(pinyin_reverse[pinyin_reverse_keys[k]]))
 
-        labels[labels == 0] = -100
-        labels[labels == 102] = -100
+    for i in range(len(logits)):
 
-        lyric_word_onset_offset = [records[i].lyric_onset_offset]
-        frame_labels = batch_get_frame_label(labels, lyric_word_onset_offset)
+        effective_pronun = []
+        for k in range(len(labels[i])):
+            # print(labels[i][k])
+            if labels[i][k] == -100:
+                continue
 
-        for j in range(len(frame_labels)):
-            for k in range(len(frame_labels[j])):
-                freq[int(frame_labels[j][k])] += 1
+            # print (labels[i][k], token_pinyin[labels[i][k]])
+            try:
+                cur_key = token_pinyin[labels[i][k]]
+                cur_key_index = pinyin_reverse_keys.index(cur_key)
+                if cur_key_index not in effective_pronun:
+                    effective_pronun.append(cur_key_index)
+            except ValueError:
+                print(labels[i][k])
+                print(token_pinyin[labels[i][k]])
 
-    freq = freq / torch.sum(freq)
+        for j in range(len(logits[i])):
+            cur_frame_best = torch.max(logits[i][j])
+            # for k in range(len(pinyin_reverse_keys)):
+            for k in effective_pronun:
+                # selected = torch.index_select(logits[i][j], dim=0, index=cur_same_pronun_token[k])
+                cur_value_list = cur_same_pronun_token[k]
+                selected = logits[i][j][cur_value_list]
+                # print (selected.shape)
+                cur_max = torch.max(selected)
 
-    return 1.0 / freq
+                logits[i][j][cur_value_list] = (cur_max * 4.0 + logits[i][j][cur_value_list]) / 5.0
+
+    return logits
+
+# def batch_get_frame_label(
+#         lyric_tokens,
+#         lyric_word_onset_offset,
+#         hop_size_second: float=0.02
+#     ):
+#         fill_value = -100
+#         # fill_value = -100
+
+#         total_frame_num = max([lyric_word_onset_offset[i][-1][-1] for i in range(len(lyric_word_onset_offset))])
+#         total_frame_num = int(round(total_frame_num / hop_size_second)) + 1
+
+#         frame_labels = torch.full((len(lyric_word_onset_offset), total_frame_num), fill_value=fill_value)
+
+#         for i in range(len(lyric_word_onset_offset)):
+#             for j in range(len(lyric_word_onset_offset[i])):
+#                 onset_frame = int(round(lyric_word_onset_offset[i][j][0] / hop_size_second))
+#                 offset_frame = int(round(lyric_word_onset_offset[i][j][1] / hop_size_second)) + 1
+#                 frame_labels[i][onset_frame: offset_frame] = lyric_tokens[i][j]
+
+#         return frame_labels
+
+# def get_ce_weight(
+#     data_path: str,
+#     tokenizer,
+# ):
+#     records = read_data_from_json(data_path)
+#     freq = torch.full((len(tokenizer),), 0.001)
+#     for i in range(len(records)):
+#         if not hasattr(records[i], "lyric_onset_offset"):
+#             continue
+
+#         target_transcription = [records[i].text]
+#         labels = tokenizer(target_transcription, 
+#                            padding=True, 
+#                            return_tensors="pt").input_ids[:,1:]
+
+#         labels[labels == 0] = -100
+#         labels[labels == 102] = -100
+
+#         lyric_word_onset_offset = [records[i].lyric_onset_offset]
+#         frame_labels = batch_get_frame_label(labels, lyric_word_onset_offset)
+
+#         for j in range(len(frame_labels)):
+#             for k in range(len(frame_labels[j])):
+#                 freq[int(frame_labels[j][k])] += 1
+
+#     freq = freq / torch.sum(freq)
+
+#     return 1.0 / freq
 
         

@@ -20,7 +20,7 @@ from transformers import AutoTokenizer, get_linear_schedule_with_warmup
 
 from module.align_model import AlignModel
 from dataset import get_alignment_dataloader, get_multitask_dataloader
-from utils.alignment import perform_viterbi, perform_viterbi_sil, get_mae
+from utils.alignment import perform_viterbi, perform_viterbi_sil, get_mae, get_pinyin_table, pypinyin_reweight
 
 os.environ["TOKENIZERS_PARALLELISM"]="false"
 
@@ -122,71 +122,6 @@ def load_align_model_and_tokenizer(
         model.load_state_dict(state_dict=state_dict)
     
     return model, tokenizer
-
-
-def get_pinyin_table(tokenizer):
-    def handle_error(chars):
-        return ['bad', 'bad']
-
-    tokens = tokenizer.convert_ids_to_tokens(np.arange(0, len(tokenizer), 1).astype(int))
-    # print (tokens)
-    token_pinyin = []
-    pinyin_reverse = {}
-    for i in range(len(tokens)):
-        try:
-            cur_pinyin = lazy_pinyin(tokens[i], style=Style.NORMAL, errors=handle_error)
-        except:
-            cur_pinyin = ['bad', 'bad']
-        if len(cur_pinyin) == 1:
-            token_pinyin.append(cur_pinyin[0])
-            if cur_pinyin[0] not in pinyin_reverse.keys():
-                pinyin_reverse[cur_pinyin[0]] = [i,]
-            else:
-                pinyin_reverse[cur_pinyin[0]].append(i)
-        else:
-            token_pinyin.append('bad')
-
-    return token_pinyin, pinyin_reverse
-
-def pypinyin_reweight(
-    logits: torch.Tensor,
-    labels,
-    token_pinyin,
-    pinyin_reverse,
-):
-    pinyin_reverse_keys = list(pinyin_reverse.keys())
-
-    cur_same_pronun_token = []
-    for k in range(len(pinyin_reverse_keys)):
-        cur_same_pronun_token.append(torch.tensor(pinyin_reverse[pinyin_reverse_keys[k]]))
-
-    for i in range(len(logits)):
-
-        effective_pronun = []
-        for k in range(len(labels[i])):
-            # print(labels[i][k])
-            if labels[i][k] == -100:
-                continue
-
-            # print (labels[i][k], token_pinyin[labels[i][k]])
-            cur_key = token_pinyin[labels[i][k]]
-            cur_key_index = pinyin_reverse_keys.index(cur_key)
-            if cur_key_index not in effective_pronun:
-                effective_pronun.append(cur_key_index)
-
-        for j in range(len(logits[i])):
-            cur_frame_best = torch.max(logits[i][j])
-            # for k in range(len(pinyin_reverse_keys)):
-            for k in effective_pronun:
-                # selected = torch.index_select(logits[i][j], dim=0, index=cur_same_pronun_token[k])
-                cur_value_list = cur_same_pronun_token[k]
-                selected = logits[i][j][cur_value_list]
-                # print (selected.shape)
-                cur_max = torch.max(selected)
-
-                logits[i][j][cur_value_list] = (cur_max * 4.0 + logits[i][j][cur_value_list]) / 5.0
-
-    return logits
 
 @torch.no_grad()
 def align_and_evaluate(

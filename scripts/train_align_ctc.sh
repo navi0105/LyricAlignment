@@ -12,7 +12,7 @@ mkdir -p ${multitask_model_dir}
 cp ${0} ${multitask_model_dir}
 
 # Train multitask
-python train_multitask_v3.py \
+python train_multitask.py \
     --train-data ${multitask_train} ${transcript_train} \
     --dev-data ${multitask_dev} ${transcript_dev}\
     --whisper-model ${whipser_model} \

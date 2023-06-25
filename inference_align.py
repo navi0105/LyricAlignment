@@ -86,18 +86,17 @@ def set_seed(seed: int):
 def load_align_model_and_tokenizer(
     model_dir: str,
     args,
-    device: str='cuda'
 ) -> AlignModel:
     assert os.path.exists(model_dir)
     with open(os.path.join(model_dir, 'args.json'), 'r') as f:
         train_args = json.load(f)
     tokenizer_name = train_args['tokenizer']
     whisper_model_name = train_args['whisper_model']
-    model_path = os.path.join(model_dir, 'best_model.pt')
+    model_path = os.path.join(model_dir, f'{args.model_name}_model.pt')
 
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
 
-    whisper_model = whisper.load_model(whisper_model_name, device=device)
+    whisper_model = whisper.load_model(whisper_model_name, device=args.device)
 
     if os.path.exists(os.path.join(model_dir, 'model_args.json')):
         with open(os.path.join(model_dir, 'model_args.json'), 'r') as f:
@@ -115,10 +114,10 @@ def load_align_model_and_tokenizer(
                        hidden_dim=model_args['hidden_dim'],
                        output_dim=model_args['output_dim'],
                        bidirectional=bidirectional,
-                       device=device)
+                       device=args.device)
     
     if model_path is not None:
-        state_dict = torch.load(model_path, map_location=device)
+        state_dict = torch.load(model_path, map_location=args.device)
         model.load_state_dict(state_dict=state_dict)
     
     return model, tokenizer
@@ -142,7 +141,7 @@ def align_and_evaluate(
     model.to(device)
     pbar = tqdm(test_dataloader)
 
-    for batch in pbar:
+    for idx, batch in enumerate(pbar):
         audios, tokens, _, lyric_word_onset_offset, _, _ = batch
 
         align_logits, _ = model.frame_manual_forward(audios)
@@ -161,6 +160,9 @@ def align_and_evaluate(
         # print(align_results)
         mae = get_mae(lyric_word_onset_offset, align_results)
         pbar.set_postfix({"current MAE": mae})
+
+        print(idx)
+        print(mae)
 
         total_mae += mae
 
@@ -181,6 +183,8 @@ def main():
     assert os.path.exists(args.model_dir)
     model, tokenizer = load_align_model_and_tokenizer(args.model_dir, args)
     whisper_tokenizer = get_tokenizer(multilingual=True, task='transcribe')
+
+
     
     assert os.path.exists(args.test_data)
     # test_dataloader = get_alignment_dataloader(data_path=args.test_data,

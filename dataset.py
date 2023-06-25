@@ -406,7 +406,7 @@ class MultitaskDataset(Dataset):
             record: Record,
             no_timestmaps: bool
     ) -> List[int]:
-        if no_timestmaps == False:
+        if no_timestmaps == False and record.lyric_onset_offset is not None:
             text_tokens = self._encode_text_with_timestamps(record.text, record.lyric_onset_offset)
         else:
             text_tokens = self.whisper_tokenizer.encode(record.text)
@@ -439,6 +439,9 @@ class MultitaskDataset(Dataset):
 
         # Transcription Data
         no_timestamps = self.no_timestamps
+        if record.lyric_onset_offset == None:
+            no_timestamps = True
+            
         transcript_text_tokens = self._get_transcript_tokens(record, no_timestamps)
         is_text_empty = len(transcript_text_tokens) == 0
         special_tokens = self._get_special_tokens(is_text_empty, self.language, self.no_timestamps)

@@ -1,5 +1,6 @@
 import argparse
 from opencc import OpenCC
+import chinese_converter
 from tqdm import tqdm
 import json
 
@@ -32,7 +33,8 @@ def main():
             data = json.load(f)
         
         for i in tqdm(range(len(data))):
-            data[i]['inference'] = cc.convert(data[i]['inference']).replace(' ', '')
+            # data[i]['inference'] = cc.convert(data[i]['inference']).replace(' ', '')
+            data[i]['inference'] = chinese_converter.to_simplified(data[i]['inference']).replace(' ', '')
             data[i]['inference'] = remove_english(data[i]['inference'])
 
         with open(file, 'w') as f:

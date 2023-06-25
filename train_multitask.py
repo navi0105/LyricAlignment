@@ -18,7 +18,7 @@ from whisper.tokenizer import get_tokenizer
 from transformers import AutoTokenizer, get_linear_schedule_with_warmup
 
 from module.align_model import AlignModel
-from utils.alignment import get_ce_weight
+# from utils.alignment import get_ce_weight
 from dataset import get_multitask_dataloader
 
 os.environ["TOKENIZERS_PARALLELISM"]="false"
@@ -633,7 +633,7 @@ def main():
                   'output_dim': len(hf_tokenizer) + args.use_ctc_loss,
                   'bidirectional': True,
                   'freeze_encoder': args.freeze_encoder,
-                  'train_alignment': False,
+                  'train_alignment': True,
                   'train_transcript': True,}
 
     print(model_args)
@@ -655,9 +655,9 @@ def main():
         json.dump(model_args, f, indent=4)
     
     optimizer = torch.optim.AdamW([{'params': multitask_model.align_rnn.parameters(), 'lr': args.lr,},
-                                    {'params': multitask_model.whisper_model.parameters(), 'lr': args.lr / 2000}],
+                                    {'params': multitask_model.whisper_model.parameters(), 'lr': args.lr / 1000}],
                                     lr=args.lr,
-                                    weight_decay=2e-5)
+                                    weight_decay=1e-5)
 
     scheduler = scheduler = get_linear_schedule_with_warmup(
         optimizer, num_warmup_steps=args.warmup_steps, num_training_steps=args.train_steps

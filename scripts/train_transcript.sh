@@ -4,29 +4,27 @@ transcript_dev=${2}
 multitask_train=${3}
 multitask_dev=${4}
 
-align_model_dir=${5}
+whipser_model=${5}
 
-transcript_model_dir=${align_model_dir}_trans_freeze
+transcript_model_dir=${6}
 
 mkdir -p ${transcript_model_dir}
 cp ${0} ${transcript_model_dir}
 
 # Train
-python train_transcript.py \
-    --train-data ${transcript_train} ${multitask_train} \
-    --dev-data ${transcript_dev} ${multitask_dev} \
-    --align-model-dir ${align_model_dir} \
+python train_multitask.py \
+    --train-data ${multitask_train} ${transcript_train} \
+    --dev-data ${multitask_dev} ${transcript_dev} \
+    --whisper-model ${whipser_model} \
+    --device cuda:1 \
     --train-batch-size 2 \
     --dev-batch-size 8 \
     --accum-grad-steps 8 \
-    --device cuda \
-    --no-timestamps \
-    --freeze-encoder \
-    --lr 5e-4 \
-    --train-steps 1500 \
+    --use-ctc-loss \
+    --lr 3e-5 \
+    --train-steps 2000 \
     --eval-steps 100 \
-    --warmup-steps 150 \
-    --save-dir ${transcript_model_dir} | tee ${transcript_model_dir}/log.txt
+    --warmup-steps 200 \
+    --save-dir ${transcript_model_dir} | tee ${transcript_model_dir}/log.txt || exit 1;
 
-# Inference
-bash scripts/evaluate_benchmark.sh ${transcript_model_dir} true | tee -a ${transcript_model_dir}/log.txt
+bash scripts/evaluate_benchmark.sh ${transcript_model_dir} true | tee ${transcript_model_dir}/evaluate_log.txt || exit 1;

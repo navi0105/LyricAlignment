@@ -59,7 +59,7 @@ def parse_args():
     parser.add_argument(
         "--device",
         type=str,
-        default="cuda",
+        default="cuda:1",
         help=""
     )
     parser.add_argument(
@@ -100,6 +100,8 @@ def transcribe(
                                   language=language,
                                   beam_size=beam_size)
         
+        # print(result)
+
         if get_timestamps:
             lyric_onset_offset = record.lyric_onset_offset
 

@@ -89,7 +89,7 @@ def parse_args():
     parser.add_argument(
         '--lr',
         type=float,
-        default=1e-5
+        default=5e-6
     )
     parser.add_argument(
         '--fp16',
@@ -338,7 +338,7 @@ def main():
                            output_dim=len(hf_tokenizer),
                            freeze_encoder=args.freeze_encoder,
                            train_alignment=False,
-                           train_transcribe=True,
+                           train_transcript=True,
                            device=device)
     
     

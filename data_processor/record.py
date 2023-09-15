@@ -7,6 +7,13 @@ import pandas as pd
 
 @dataclass
 class Record:
+    '''
+    a Dataclass for storing audio information
+    audio_path: audio's absolute path
+    text: audio transcription
+    lyric_onset_offset: Optional, a list of list, each sublist contains two elements, the first one is the onset time of a word, the second one is the offset time of a word
+                        e.g. [[0.0, 0.5], [0.5, 1.0], [1.0, 1.5]]
+    '''
     audio_path: str
     text: str
     lyric_onset_offset: Optional[list]=None

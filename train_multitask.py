@@ -159,7 +159,7 @@ def infinite_iter(data_loader: DataLoader) -> Iterator:
         for batch in data_loader:
             yield batch
 
-# >>> Batch handling >>>
+# Batch handler
 def rebatch_handler(
     batch,
     is_multitask: bool=False
@@ -206,23 +206,6 @@ def split_batch(batch):
 
     return multitask_batch, transcript_batch
 
-def get_align_batch(batch):
-    align_batch = []
-
-    # base on if frame labels exists
-    # frame_labels = item[2] 
-    for item in zip(*batch):
-        if item[2] is not None:
-            align_batch.append(item)
-
-    if len(align_batch) > 0:
-        align_batch = rebatch_handler(align_batch, is_multitask=True)
-    else:
-        align_batch = None
-    
-    return align_batch
-
-# <<< Batch handling <<<
 
 
 def train_step(
@@ -251,7 +234,6 @@ def train_step(
     for _ in range(accum_grad_steps):
         batch = next(train_iter)
         multitask_batch, transcript_batch = split_batch(batch)
-        # align_batch = get_align_batch(batch)
 
         # audios
         # y_text
@@ -360,7 +342,6 @@ def evaluate(
             'trans_ce': 0,
             'trans_ctc': 0}
 
-    # mel, y_text, frame_labels, lyric_word_onset_offset, decoder_input, decoder_output
     for batch in tqdm(dev_loader):
         multitask_batch, transcript_batch = split_batch(batch)
 

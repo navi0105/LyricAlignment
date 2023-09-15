@@ -1,0 +1,8 @@
+tqdm
+numpy
+pandas
+torch
+openai-whisper
+transformers
+evaluate
+jiwer

@@ -29,8 +29,6 @@ class RNN(nn.Module):
                             dropout=dropout,
                             batch_first=batch_first,
                             bidirectional=bidirectional)
-        
-        # self.ln = nn.LayerNorm(hidden_size + (bidirectional * hidden_size))
 
         self.activate = nn.Mish()
 
@@ -39,7 +37,6 @@ class RNN(nn.Module):
 
     def forward(self, x):
         out, _ = self.rnn(x)
-        # out = self.ln(out)
         out = self.activate(out)
         out = self.fc(out)
 

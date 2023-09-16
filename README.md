@@ -1,12 +1,25 @@
 # LyricAlignment
 
+## Install package
+```bash
+pip install -r requirements.txt 
+```
+
+## Usage
+### Data Preparation
+
+### Training
+
+### Inference & Evaluate
+
+
 ## TODO
 ### README
-- [x] complete README
+- [] complete README
 
 ### Code
 - [ ] Data Processer
-- [ ] Dataset & DataLoader
+- [x] Dataset & DataLoader
 - [ ] Module
 - [ ] Training Code
 - [ ] Inference Code

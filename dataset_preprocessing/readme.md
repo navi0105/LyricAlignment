@@ -14,7 +14,7 @@ The file "MIR1k_partial_align.json" contains the annotation of *MIR-1k-partial-a
 
 #### Data structure
 
-A list of data. Each data is stored as a dictionary data structure. The keys are "**song_id**", "**lyric**", and optionally "**on_offset**". If one song has the character-level alignment label, then it would has the "on_offset" attribute. The detailed descriptions are as follows:
+The JSON file contains a list. Each element in the list represents one song (one sample), and has the data structure of dictionary. The keys are "**song_id**", "**lyric**", and optionally "**on_offset**". If one song has the character-level alignment label, then it would has the "on_offset" attribute. The detailed descriptions are as follows:
 
 - "**song_id**": A string. Indicate the basename of the song (e.g. "khair_1.wav").
 
@@ -44,9 +44,9 @@ python mix_with_musdb.py [audio_dir] [augment_dir] [musdb_dir] [snr]
 
 ``augment_dir``: The directory that the augmented audios will be written to. In this process, the file basename will not be modified.
 
-``musdb_dir``: The directory to Musdb-18's test set (NOT the whole dataset!). It will find those ``accompaniment.wav`` files and randomly select one for augmentation for each audio.
+``musdb_dir``: The directory to Musdb-18's test set (NOT the whole dataset!). It will find those ``accompaniment.wav`` files and randomly choose one for augmentation for each audio.
 
-Actually, in our experiment, we left 10 songs (all songs after "The Easton Ellises (Baumi) - SDRNR" in alphabetical order) in Musdb-18's test set out for some preliminary test. You can decide if you also want to adopt this setting. If so, remove these 10 songs from the `musdb_dir`.
+Actually, in our experiment, we left 10 songs (all songs after "The Easton Ellises (Baumi) - SDRNR" in alphabetical order) in Musdb-18's test set out for some preliminary tests. You can decide if you also want to adopt this setting. If so, just remove these 10 songs from the `musdb_dir`.
 
 ``snr``: The desired SNR value.
 
@@ -60,7 +60,7 @@ python demucs_dataset.py [audio_dir] [separated_dir]
 
 `audio_dir`: The directory to the input audio files.
 
-`separated_dir`: The directory that the separated audios will be written to.
+`separated_dir`: The directory that the extracted vocals will be written to.
 
 This should be applied to both Opencpop and MIR-1k.
 
@@ -70,11 +70,11 @@ This should be applied to both Opencpop and MIR-1k.
 python spleeter_dataset.py [audio_dir] [separated_dir]
 ```
 
-The arguments are the same as ``demucs_dataset.py``. To run this code, you have to install Spleeter, which is not included in the ``requirements.txt`` (as this was only used in ablation studies). Again, this should be applied to both Opencpop and MIR-1k.
+The arguments are the same as ``demucs_dataset.py``. To run this code, you have to install the Spleeter package (see [https://github.com/deezer/spleeter](https://github.com/deezer/spleeter)), which is not included in ``requirements.txt`` (as this was only used in ablation studies). Again, this should be applied to both Opencpop and MIR-1k.
 
 ### Add absolute song_path attributes
 
-In the final step, we have to add the absolute "**song_path**" attribute to each data sample in the json files, so our training scripts can understand where the audios are actually stored in solely from those json files.
+In the final step, we have to add the absolute "**song_path**" attribute to every sample in the json files, so our training scripts can understand where the audios are actually stored in solely from those json files.
 
 ```
 python replace_path.py [data_path] [output_path] [target_dir]
@@ -86,7 +86,7 @@ python replace_path.py [data_path] [output_path] [target_dir]
 
 `target_dir`: The directory to the audio files. The song_path will be ``str(Path(target_dir).joinpath(song_id))``, where ``song_id`` is the song_id attribute of each data sample. Make sure that this leads to the correct absolute path of the corresponding audio.
 
-As a reminder, to reproduce our experiments (not ablation studies), you need 3 JSON files (SNR=0, -5, -10) for the training and validation set of Opencpop, 1 JSON file (without data augmentation) for Opencpop's test set, 1 JSON file (without data augmentation) for the MIR-1k dataset.
+As a reminder, to reproduce our experiments (exclude ablation studies), you need 3 JSON files (augmented with SNR=0, -5, -10, and use HT Demucs to extract vocals) for the training and validation set of Opencpop, 1 JSON file (without data augmentation) for Opencpop's test set, 1 JSON file (without data augmentation, and use HT Demucs to extract vocals) for the MIR-1k dataset.
 
 **That's it :)**
 

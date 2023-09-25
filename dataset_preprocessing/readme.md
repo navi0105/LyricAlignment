@@ -30,7 +30,7 @@ We have manually verified the lyrics of the 17-song subset during the annotation
 
 ## Dataset preprocessing
 
-First, we have to manually augment the Opencpop dataset with the Musdb-18 dataset. Please first obtain the audios of the two datasets by yourself (we are not supposed to re-distribute them).
+First, we have to manually augment the Opencpop dataset with the MUSDB-18 dataset. Please first obtain the audios of the two datasets by yourself (we are not supposed to re-distribute them).
 
 ### Data augmentation
 
@@ -44,9 +44,9 @@ python mix_with_musdb.py [audio_dir] [augment_dir] [musdb_dir] [snr]
 
 ``augment_dir``: The directory that the augmented audios will be written to. In this process, the file basename will not be modified.
 
-``musdb_dir``: The directory to Musdb-18's test set (NOT the whole dataset!). It will find those ``accompaniment.wav`` files and randomly choose one for augmentation for each audio.
+``musdb_dir``: The directory to MUSDB-18's test set (NOT the whole dataset!). It will find those ``accompaniment.wav`` files and randomly choose one for augmentation for each audio.
 
-Actually, in our experiment, we left 10 songs (all songs after "The Easton Ellises (Baumi) - SDRNR" in alphabetical order) in Musdb-18's test set out for some preliminary tests. You can decide if you also want to adopt this setting. If so, just remove these 10 songs from the `musdb_dir`.
+Actually, in our experiment, we left 10 songs (all songs after "The Easton Ellises (Baumi) - SDRNR" in alphabetical order) in MUSDB-18's test set out for some preliminary tests. You can decide if you also want to adopt this setting. If so, just remove these 10 songs from the `musdb_dir`.
 
 ``snr``: The desired SNR value.
 
@@ -89,5 +89,3 @@ python replace_path.py [data_path] [output_path] [target_dir]
 As a reminder, to reproduce our experiments (exclude ablation studies), you need 3 JSON files (augmented with SNR=0, -5, -10, and use HT Demucs to extract vocals) for the training and validation set of Opencpop, 1 JSON file (without data augmentation) for Opencpop's test set, 1 JSON file (without data augmentation, and use HT Demucs to extract vocals) for the MIR-1k dataset.
 
 **That's it :)**
-
-

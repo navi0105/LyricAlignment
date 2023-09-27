@@ -54,14 +54,14 @@ def parse_args():
         type=str,
         default='zh'
     )
-    # parser.add_argument(
-    #     '--train-alignment',
-    #     action='store_true'
-    # )
-    # parser.add_argument(
-    #     '--train-transcript',
-    #     action='store_true'
-    # )
+    parser.add_argument(
+        '--train-alignment',
+        action='store_true'
+    )
+    parser.add_argument(
+        '--train-transcript',
+        action='store_true'
+    )
     parser.add_argument(
         '--device',
         type=str,
@@ -352,6 +352,7 @@ def evaluate(
         # decoder_input
         # decoder_output
         if multitask_batch is not None:
+            # print(multitask_batch[0])
             multi_align_logits, multi_trans_logits = model.frame_manual_forward(
                 multitask_batch[0],
                 multitask_batch[4].to(device),
@@ -551,8 +552,6 @@ def compute_ce_loss(
     vocab_size: int=21128,
     device: str='cuda'
 ) -> torch.Tensor:
-    fill_value = -100 if compute_sil else 0
-
     frame_labels = frame_labels[:, : logits.shape[1]]
     if frame_labels.shape[1] < logits.shape[1]:
         frame_labels = torch.cat((frame_labels, 
@@ -614,8 +613,8 @@ def main():
                   'output_dim': len(hf_tokenizer) + args.use_ctc_loss,
                   'bidirectional': True,
                   'freeze_encoder': args.freeze_encoder,
-                  'train_alignment': True,
-                  'train_transcript': True,}
+                  'train_alignment': args.train_alignment,
+                  'train_transcript': args.train_transcript,}
 
     print(model_args)
 
@@ -652,7 +651,6 @@ def main():
         language=args.language,
         no_timestamps=True,
         use_ctc=args.use_ctc_loss,
-        use_v2_dataset=True,
         batch_size=args.train_batch_size,
         shuffle=True
     )
@@ -663,17 +661,9 @@ def main():
         language=args.language,
         no_timestamps=True,
         use_ctc=args.use_ctc_loss,
-        use_v2_dataset=True,
         batch_size=args.dev_batch_size,
         shuffle=False
     )
-
-    # for train_data in args.train_data:
-    #     if 'opencpop' in train_data:
-    #         ce_word_weights = get_ce_weight(args.train_data[0],
-    #                                         hf_tokenizer).to(device)
-    #     else:
-    #         ce_word_weights = None
 
     loss_fn = {'ce_loss': nn.CrossEntropyLoss(),
                'silence_ce_loss': nn.BCEWithLogitsLoss()}

@@ -29,16 +29,6 @@ def parse_args():
         default='inference',
         help=""
     )
-    parser.add_argument(
-        '--ref-timestamp-key',
-        type=str,
-        default='onset_offset'
-    )
-    parser.add_argument(
-        '--pred-timestamp-key',
-        type=str,
-        default='inference_onset_offset'
-    )
 
     args = parser.parse_args()
     return args

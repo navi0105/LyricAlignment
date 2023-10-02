@@ -17,6 +17,9 @@ import whisper
 from whisper.tokenizer import get_tokenizer
 from transformers import AutoTokenizer, get_linear_schedule_with_warmup
 
+import pypinyin
+from pypinyin import lazy_pinyin, Style
+
 from module.align_model import AlignModel
 # from utils.alignment import get_ce_weight
 from dataset import get_multitask_dataloader
@@ -42,7 +45,7 @@ def parse_args():
     parser.add_argument(
         '--whisper-model',
         type=str,
-        default='large'
+        default='medium'
     )
     parser.add_argument(
         '--tokenizer',
@@ -72,12 +75,12 @@ def parse_args():
     parser.add_argument(
         '--train-batch-size',
         type=int,
-        default=4
+        default=2
     )
     parser.add_argument(
         '--dev-batch-size',
         type=int,
-        default=16
+        default=8
     )
     parser.add_argument(
         '--accum-grad-steps',
@@ -95,7 +98,7 @@ def parse_args():
     parser.add_argument(
         '--lr',
         type=float,
-        default=1e-5
+        default=1e-3
     )
     parser.add_argument(
         '--max-grad-norm',
@@ -216,6 +219,8 @@ def train_step(
     accum_grad_steps: int,
     max_grad_norm: float,
     loss_fn: dict,
+    token_pinyin,
+    pinyin_lookup_table,
     vocab_size: int=21128,
     use_ctc_loss: bool=False,
     get_orig_len: bool=True,
@@ -250,6 +255,18 @@ def train_step(
                 get_orig_len=get_orig_len
             )
             if model.train_alignment:
+                # Convert word token to pinyin token
+                for i in range(len(multitask_batch[1])):
+                    for j in range(len(multitask_batch[1][i])):
+                        if multitask_batch[1][i][j] != -100:
+                            multitask_batch[1][i][j] = pinyin_lookup_table[token_pinyin[multitask_batch[1][i][j]]]
+
+
+                for i in range(len(multitask_batch[2])):
+                    for j in range(len(multitask_batch[2][i])):
+                        if multitask_batch[2][i][j] != -100:
+                            multitask_batch[2][i][j] = pinyin_lookup_table[token_pinyin[multitask_batch[2][i][j]]]
+
                 multi_align_ce_loss = compute_ce_loss(multi_align_logits,
                                                       multitask_batch[2].to(device),
                                                       loss_fn=loss_fn,
@@ -329,6 +346,8 @@ def evaluate(
     model: AlignModel,
     dev_loader: DataLoader,
     loss_fn: dict,
+    token_pinyin,
+    pinyin_lookup_table,
     vocab_size: int=21128,
     use_ctc_loss: bool=False,
     get_orig_len: bool=True
@@ -360,6 +379,18 @@ def evaluate(
             )
 
             if model.train_alignment:
+                # Convert word token to pinyin token
+                for i in range(len(multitask_batch[1])):
+                    for j in range(len(multitask_batch[1][i])):
+                        if multitask_batch[1][i][j] != -100:
+                            multitask_batch[1][i][j] = pinyin_lookup_table[token_pinyin[multitask_batch[1][i][j]]]
+
+
+                for i in range(len(multitask_batch[2])):
+                    for j in range(len(multitask_batch[2][i])):
+                        if multitask_batch[2][i][j] != -100:
+                            multitask_batch[2][i][j] = pinyin_lookup_table[token_pinyin[multitask_batch[2][i][j]]]
+
                 multi_align_ce_loss = compute_ce_loss(multi_align_logits,
                                                     multitask_batch[2].to(device),
                                                     loss_fn=loss_fn,
@@ -439,12 +470,16 @@ def main_loop(
     optimizer: torch.optim.Optimizer,
     scheduler: torch.optim.lr_scheduler.LambdaLR,
     loss_fn: dict,
+    token_pinyin,
+    pinyin_lookup_table,
     args: argparse.Namespace,
     get_orig_len: bool=True,
 ) -> None:
     init_losses = evaluate(model, 
                            dev_loader, 
                            loss_fn=loss_fn,
+                           token_pinyin=token_pinyin,
+                           pinyin_lookup_table=pinyin_lookup_table,
                            use_ctc_loss=args.use_ctc_loss,
                            get_orig_len=get_orig_len)
     
@@ -482,6 +517,8 @@ def main_loop(
             args.accum_grad_steps,
             args.max_grad_norm,
             loss_fn=loss_fn,
+            token_pinyin=token_pinyin,
+            pinyin_lookup_table=pinyin_lookup_table,
             use_ctc_loss=args.use_ctc_loss,
             get_orig_len=get_orig_len,
             allow_transcript=allow_transcript
@@ -509,6 +546,8 @@ def main_loop(
                 model, 
                 dev_loader, 
                 loss_fn=loss_fn,
+                token_pinyin=token_pinyin,
+                pinyin_lookup_table=pinyin_lookup_table,
                 use_ctc_loss=args.use_ctc_loss,
                 get_orig_len=get_orig_len
             )
@@ -592,6 +631,30 @@ def compute_ctc_loss(
     cur_ctc_loss = F.ctc_loss(output_log_sm, labels, input_lengths, target_length)
     return cur_ctc_loss
 
+def get_pinyin_table(tokenizer):
+    def handle_error(chars):
+        return ['bad', 'bad']
+
+    tokens = tokenizer.convert_ids_to_tokens(np.arange(0, len(tokenizer), 1).astype(int))
+    # print (tokens)
+    token_pinyin = []
+    pinyin_reverse = {}
+    for i in range(len(tokens)):
+        try:
+            cur_pinyin = lazy_pinyin(tokens[i], style=Style.NORMAL, errors=handle_error)
+        except:
+            cur_pinyin = ['bad', 'bad']
+        if len(cur_pinyin) == 1:
+            token_pinyin.append(cur_pinyin[0])
+            if cur_pinyin[0] not in pinyin_reverse.keys():
+                pinyin_reverse[cur_pinyin[0]] = [i,]
+            else:
+                pinyin_reverse[cur_pinyin[0]].append(i)
+        else:
+            token_pinyin.append('bad')
+
+    return token_pinyin, pinyin_reverse
+
 def main():
     args = parse_args()
     set_seed(args.seed)
@@ -643,6 +706,14 @@ def main():
         optimizer, num_warmup_steps=args.warmup_steps, num_training_steps=args.train_steps
     )
 
+    token_pinyin, pinyin_reverse = get_pinyin_table(hf_tokenizer)
+
+    pinyin_lookup_table = {}
+    for i in range(len(token_pinyin)):
+        if not token_pinyin[i] in pinyin_lookup_table:
+            pinyin_lookup_table[token_pinyin[i]] = len(pinyin_lookup_table) + 1
+
+
     # assert os.path.exists(args.train_data)
     train_dataloader = get_multitask_dataloader(
         *args.train_data,
@@ -675,6 +746,8 @@ def main():
         optimizer=optimizer,
         scheduler=scheduler,
         loss_fn=loss_fn,
+        token_pinyin=token_pinyin,
+        pinyin_lookup_table=pinyin_lookup_table,
         args=args,
         get_orig_len=False,
     )

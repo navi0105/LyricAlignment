@@ -7,9 +7,6 @@ from torch import nn
 from torch.nn.utils.rnn import pad_sequence
 import whisper
 from whisper.audio import N_FRAMES, pad_or_trim, log_mel_spectrogram
-
-class Transformer(nn.Module):
-    pass
    
 class RNN(nn.Module):
     def __init__(
@@ -78,7 +75,12 @@ class AlignModel(torch.nn.Module):
         y_in=None,
         get_orig_len: bool=True
     ):
-        audios = np.stack((itertools.zip_longest(*audios, fillvalue=0)), axis=1).astype('float32')
+        max_audio_len = max(map(len, audios))
+        for i in range(len(audios)):
+            audios[i] = np.append(audios[i], [0] * (max_audio_len - len(audios[i])))
+
+        audios = np.array(audios).astype('float32')
+
         mel = log_mel_spectrogram(audios).to(self.device)
         align_logit = None
         if get_orig_len:

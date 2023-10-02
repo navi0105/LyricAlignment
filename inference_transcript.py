@@ -12,9 +12,9 @@ from transformers import AutoTokenizer
 import whisper
 
 from module.align_model import AlignModel
-from data_processor.record import Record, read_data_from_csv, read_data_from_json
+from data_processor.record import Record, read_data
 
-from utils.audio import load_audio_file, load_MIR1k_audio_file
+from utils.audio import load_audio_file
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -44,22 +44,22 @@ def parse_args():
     parser.add_argument(
         '--beam_size',
         type=int,
-        default=50
+        default=5
     )
     parser.add_argument(
         '--get-timestamps',
         action='store_true'
     )
-    parser.add_argument(
-        '--is-mir1k',
-        type=int,
-        default=0,
-        help="0 => No;\n1 => yes, mixture;\n2 => yes, vocal"
-    )
+    # parser.add_argument(
+    #     '--is-mir1k',
+    #     type=int,
+    #     default=0,
+    #     help="0 => No;\n1 => yes, mixture;\n2 => yes, vocal"
+    # )
     parser.add_argument(
         "--device",
         type=str,
-        default="cuda:1",
+        default="cuda",
         help=""
     )
     parser.add_argument(
@@ -78,45 +78,24 @@ def transcribe(
     records: List[Record],
     get_timestamps: bool=False,
     language: str='zh',
-    beam_size: int=50,
-    is_mir1k: int=0
+    beam_size: int=5,
 ) -> List[dict]:
     transcribe_results = []
     for record in tqdm(records):
         audio_path = record.audio_path
         song_id = Path(audio_path).stem
 
-        if is_mir1k == 0:
-            audio = load_audio_file(audio_path)['speech']
-        elif is_mir1k == 1:
-            audio = load_MIR1k_audio_file(audio_path, mixture=True)['speech']
-        elif is_mir1k == 2:
-            audio = load_MIR1k_audio_file(audio_path, mixture=False)['speech']
-        else:
-            raise ValueError
-
+        audio = load_audio_file(audio_path)['speech']
+        
         result = model.transcribe(audio=audio,
                                   task='transcribe',
                                   language=language,
                                   beam_size=beam_size)
         
         # print(result)
-
-        if get_timestamps:
-            lyric_onset_offset = record.lyric_onset_offset
-
-            inference_onset_offset = []
-            for segment in result['segments']:
-                inference_onset_offset.append([segment['start'], segment['end']])
-        else:
-            lyric_onset_offset = None
-            inference_onset_offset = []
-
         transcribe_results.append({'song_id': song_id,
                                    'lyric': record.text,
-                                   'inference': result['text'],
-                                   'onset_offset': lyric_onset_offset,
-                                   'inference_onset_offset': inference_onset_offset})
+                                   'inference': result['text']})
 
     return transcribe_results
 
@@ -189,17 +168,13 @@ def main():
     transcribe_model.to(device)
 
     assert os.path.exists(args.test_data)
-    if os.path.splitext(args.test_data)[-1] == '.csv':
-        test_records = read_data_from_csv(args.test_data)
-    else:
-        test_records = read_data_from_json(args.test_data)
+    test_records = read_data(args.test_data)
     
     transcribe_results = transcribe(model=transcribe_model,
                                     records=test_records,
                                     get_timestamps=args.get_timestamps,
                                     language=args.language,
-                                    beam_size=args.beam_size,
-                                    is_mir1k=args.is_mir1k)
+                                    beam_size=args.beam_size)
     
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     with open(args.output, 'w') as f:

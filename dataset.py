@@ -8,11 +8,11 @@ from torch.nn.utils.rnn import pad_sequence
 
 from whisper.tokenizer import Tokenizer
 from whisper import log_mel_spectrogram, pad_or_trim
-from whisper.audio import N_FRAMES, load_audio
+from whisper.audio import N_FRAMES
 
 from data_processor.record import read_data
 
-from utils.audio import load_audio_file, load_mixture_audio_file
+from utils.audio import load_audio_file
 
 # Whisper Dataset
 class TranscriptDataset(Dataset):
@@ -151,13 +151,14 @@ class AlignDataset(Dataset):
         pass
 
 
-class MultitaskDatasetFinal(TranscriptDataset, AlignDataset):
+class MultitaskDataset(TranscriptDataset, AlignDataset):
     def __init__(
         self, 
         records: List[Record],
         whisper_tokenizer, 
         hf_tokenizer, 
         language: str='zh',
+        is_mixture: int=0,
         no_timestamps: bool=True,
         use_ctc: bool=False):
         # Inherit from TranscriptDataset and AlignDataset
@@ -173,6 +174,7 @@ class MultitaskDatasetFinal(TranscriptDataset, AlignDataset):
         self.whisper_tokenizer = whisper_tokenizer
         self.hf_tokenizer = hf_tokenizer
         self.language = language
+        self.is_mixture = is_mixture
         self.no_timestamps = no_timestamps
 
     def __len__(self):
@@ -181,7 +183,7 @@ class MultitaskDatasetFinal(TranscriptDataset, AlignDataset):
     def __getitem__(self, index):
         record = self.records[index]
 
-        audio = load_audio(record.audio_path, sr=16000)
+        audio = load_audio_file(record.audio_path, audio_type=self.is_mixture)['speech']
 
         text = record.text
 
@@ -234,6 +236,7 @@ def get_multitask_dataloader(
     hf_tokenizer,
     whisper_tokenizer,
     language: str='zh',
+    is_mixture: int=0,
     no_timestamps: bool=True,
     use_ctc: bool=False,
     batch_size: int=1,
@@ -243,11 +246,12 @@ def get_multitask_dataloader(
     for path in data_paths:
         records.extend(read_data(path))
 
-    dataset = MultitaskDatasetFinal(
+    dataset = MultitaskDataset(
         records=records,
         hf_tokenizer=hf_tokenizer,
         whisper_tokenizer=whisper_tokenizer,
         language=language,
+        is_mixture=is_mixture,
         no_timestamps=no_timestamps,
         use_ctc=use_ctc
     )

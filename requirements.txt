@@ -12,3 +12,5 @@ spleeter
 soundfile
 numba
 pypinyin
+opencc-python-reimplement
+chinese_converter

@@ -48,6 +48,11 @@ def parse_args():
         default=1
     )
     parser.add_argument(
+        '--is-mixture',
+        choices=[0, 1, 2],
+        default=0,
+    )
+    parser.add_argument(
         '--predict-sil',
         action='store_true',
         help='set this flag for model trained with ctc loss'
@@ -274,6 +279,7 @@ def main():
         args.test_data,
         hf_tokenizer=tokenizer,
         whisper_tokenizer=whisper_tokenizer,
+        is_mixture=args.is_mixture,
         no_timestamps=True,
         use_ctc=args.predict_sil,
         batch_size=args.batch_size,

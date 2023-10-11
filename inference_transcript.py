@@ -47,15 +47,11 @@ def parse_args():
         default=5
     )
     parser.add_argument(
-        '--get-timestamps',
-        action='store_true'
+        '--is-mixture',
+        choices=[0, 1, 2],
+        default=0,
+        help="0: mono; 1: mixture; 2: mixture, but vocal only"
     )
-    # parser.add_argument(
-    #     '--is-mir1k',
-    #     type=int,
-    #     default=0,
-    #     help="0 => No;\n1 => yes, mixture;\n2 => yes, vocal"
-    # )
     parser.add_argument(
         "--device",
         type=str,
@@ -76,16 +72,17 @@ def parse_args():
 def transcribe(
     model: whisper.Whisper,
     records: List[Record],
-    get_timestamps: bool=False,
     language: str='zh',
     beam_size: int=5,
+    is_mixture: int=0
 ) -> List[dict]:
     transcribe_results = []
     for record in tqdm(records):
         audio_path = record.audio_path
         song_id = Path(audio_path).stem
 
-        audio = load_audio_file(audio_path)['speech']
+        if is_mixture == 0:
+            audio = load_audio_file(audio_path, is_mixture)['speech']
         
         result = model.transcribe(audio=audio,
                                   task='transcribe',
@@ -172,9 +169,9 @@ def main():
     
     transcribe_results = transcribe(model=transcribe_model,
                                     records=test_records,
-                                    get_timestamps=args.get_timestamps,
                                     language=args.language,
-                                    beam_size=args.beam_size)
+                                    beam_size=args.beam_size,
+                                    is_mixture=args.is_mixture)
     
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     with open(args.output, 'w') as f:

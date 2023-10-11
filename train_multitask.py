@@ -66,6 +66,11 @@ def parse_args():
         action='store_true'
     )
     parser.add_argument(
+        '--is-mixture',
+        choices=[0, 1, 2],
+        default=0
+    )
+    parser.add_argument(
         '--device',
         type=str,
         default='cuda'
@@ -720,6 +725,7 @@ def main():
         hf_tokenizer=hf_tokenizer,
         whisper_tokenizer=whisper_tokenizer,
         language=args.language,
+        is_mixture=args.is_mixture,
         no_timestamps=True,
         use_ctc=args.use_ctc_loss,
         batch_size=args.train_batch_size,
@@ -730,6 +736,7 @@ def main():
         hf_tokenizer=hf_tokenizer,
         whisper_tokenizer=whisper_tokenizer,
         language=args.language,
+        is_mixture=args.is_mixture,
         no_timestamps=True,
         use_ctc=args.use_ctc_loss,
         batch_size=args.dev_batch_size,

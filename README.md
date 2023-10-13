@@ -2,7 +2,7 @@
 This is a source code of paper "Adapting pretrained speech model for Mandarin lyrics transcription and alignment", you can use this repository to reproduce the experiment in our paper.
 
 
-## Create Conda environment & Install package
+## Install Python Packages
 ```bash
 pip install -r requirements.txt 
 ```

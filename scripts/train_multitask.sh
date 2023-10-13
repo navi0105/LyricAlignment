@@ -5,7 +5,7 @@ test_data=${3}
 model_dir=${4}
 
 whisper_model='medium'
-device='cuda:1'
+device='cuda'
 train_batch_size=2
 dev_batch_size=8
 accum_grad_steps=8
@@ -13,6 +13,7 @@ lr=0.005
 train_steps=2000
 eval_steps=200
 warmup_steps=200
+seed=114514
 
 # Training
 python train_multitask.py \
@@ -31,6 +32,7 @@ python train_multitask.py \
     --warmup-steps ${warmup_steps} \
     --save-dir ${model_dir} \
     --device ${device} \
+    --seed ${seed}
 
 # Evaluation
 ## Alignment

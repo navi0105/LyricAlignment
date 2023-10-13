@@ -44,7 +44,7 @@ def parse_args():
     # Model Argument
     parser.add_argument(
         '--whisper-model',
-        type=str,
+        choices=['tiny', 'base', 'small', 'medium', 'large', 'large-v2'],
         default='medium'
     )
     parser.add_argument(
@@ -103,7 +103,7 @@ def parse_args():
     parser.add_argument(
         '--lr',
         type=float,
-        default=1e-3
+        default=5e-3
     )
     parser.add_argument(
         '--max-grad-norm',
@@ -113,17 +113,17 @@ def parse_args():
     parser.add_argument(
         '--train-steps',
         type=int,
-        default=1000
+        default=2000
     )
     parser.add_argument(
         '--eval-steps',
         type=int,
-        default=100
+        default=200
     )
     parser.add_argument(
         '--warmup-steps',
         type=int,
-        default=100
+        default=200
     )
 
     parser.add_argument(

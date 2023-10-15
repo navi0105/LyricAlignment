@@ -22,6 +22,10 @@ from module.align_model import AlignModel
 from dataset import get_multitask_dataloader
 from utils.alignment import perform_viterbi_ctc, perform_viterbi, get_mae
 
+from utils.audio import load_audio_file
+
+from data_processor.record import read_data
+
 os.environ["TOKENIZERS_PARALLELISM"]="false"
 
 def parse_args():
@@ -127,7 +131,7 @@ def load_align_model_and_tokenizer(
 def align_and_evaluate(
     model: AlignModel,
     tokenizer,
-    test_dataloader: DataLoader, 
+    test_data,
     use_ctc_loss: bool=False,
     device: str='cuda'
 ):
@@ -139,45 +143,39 @@ def align_and_evaluate(
     total_mae = 0
     model.eval()
     model.to(device)
-    pbar = tqdm(test_dataloader)
-    cnt = 0
 
-    for batch in pbar:
-        audios, tokens, _, lyric_word_onset_offset, _, _ = batch
+    records = read_data(test_data)
 
-        # print (tokens)
+    for record in tqdm(records):
+        audio_path = record.audio_path
+        song_id = Path(audio_path).stem
+
+        audio = load_audio_file(audio_path)['speech']
+
+        align_logits, _ = model.frame_manual_forward([audio,])
+        align_logits = align_logits.cpu()
+
+        tokens = tokenizer(record.text,
+                            padding=True,
+                            return_tensors='pt')['input_ids'][:, 1:]
+        
+        tokens[tokens == 0] = -100
+        tokens[tokens == 102] = -100
+
         for i in range(len(tokens)):
             for j in range(len(tokens[i])):
                 if tokens[i][j] != -100:
                     tokens[i][j] = pinyin_lookup_table[token_pinyin[tokens[i][j]]]
 
-        # print (tokens, lyric_word_onset_offset)
-
-        if lyric_word_onset_offset == (None,):
-            continue
-
-        align_logits, _ = model.frame_manual_forward(audios)
-
-        align_logits = align_logits.cpu()
-
         if use_ctc_loss:
             align_results = perform_viterbi_ctc(align_logits, tokens)
         else:
             align_results = perform_viterbi(align_logits, tokens)
-        
-        mae = get_mae(lyric_word_onset_offset, align_results)
-        # print (mae)
-        pbar.set_postfix({"current MAE": mae})
 
-        total_mae += mae
-        cnt = cnt + 1
+        cur_prediction = [[align_results[0][i][0], align_results[0][i][1], record.text[i]] for i in range(len(align_results[0]))]
+        print (cur_prediction)
 
-
-    # avg_mae = total_mae / len(test_dataloader)
-    avg_mae = total_mae / cnt
-    print("Average MAE:", avg_mae)
-    # print("Weighted MAE:", weighted_mae / len(segment_cnt))
-    return avg_mae
+    return
 
 def main():
     args = parse_args()
@@ -195,21 +193,10 @@ def main():
     whisper_tokenizer = get_tokenizer(multilingual=True, task='transcribe')
     
     assert os.path.exists(args.test_data)
-
-    test_dataloader = get_multitask_dataloader(
-        args.test_data,
-        hf_tokenizer=tokenizer,
-        whisper_tokenizer=whisper_tokenizer,
-        is_mixture=args.is_mixture,
-        no_timestamps=True,
-        use_ctc=args.use_ctc_loss,
-        batch_size=args.batch_size,
-        shuffle=False
-    )
     
     align_and_evaluate(model=model,
                        tokenizer=tokenizer,
-                       test_dataloader=test_dataloader,
+                       test_data=args.test_data,
                        use_ctc_loss=args.use_ctc_loss,
                        device=device)
 

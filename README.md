@@ -6,7 +6,7 @@ Jun-You Wang, Chon-In Leong, Yu-Chen Lin, Li Su and Jyh-Shing Roger Jang, "Adapt
 
 You can use this repository to reproduce the experiments in our paper.
 
-This repo also includes the chatacter boundary annotation of a subset of the MIR-1k dataset (see `dataset_preprocessing/`).
+This repo also includes the character boundary annotation of a subset of the MIR-1k dataset (see `dataset_preprocessing/`).
 
 ## Install Python Packages
 
@@ -109,6 +109,16 @@ python evaluate_transcript.py \
 ### Inference lyrics alignment without groundtruth
 
 The above code for testing lyrics alignment models requires the groundtruth alignment annotation (so it can compute the MAE). If you don't have the groundtruth, run the following code:
+
+```bash
+python inference_alignment_nogt.py  
+-f [test_data]  
+--model-dir [model_dir]  
+--use-ctc-loss  
+--device [device_id]
+```
+
+The format of `test_data` is the same as in `inference_alignment.py`, but this time, the `on_offset` attribute is not required. On the other hand, `inference_alignment.py` automatically ignores samples that do not have the `on_offset` attribute (in order to handle `MIR1k_partial_align.json`).
 
 
 

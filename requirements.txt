@@ -2,7 +2,7 @@ tqdm
 numpy
 pandas
 librosa
-torch
+torch>=1.13.1
 openai-whisper
 transformers
 jiwer

@@ -35,6 +35,12 @@ def parse_args():
         '--use-pretrained',
         action='store_true'
     )
+
+    parser.add_argument(
+        '--use-groundtruth',
+        action='store_true'
+    )
+
     parser.add_argument(
         '--beam_size',
         type=int,
@@ -68,7 +74,8 @@ def transcribe(
     records: List[Record],
     language: str='zh',
     beam_size: int=5,
-    is_mixture: int=0
+    is_mixture: int=0,
+    use_groundtruth: bool=True
 ) -> List[dict]:
     transcribe_results = []
     for record in tqdm(records):
@@ -84,9 +91,15 @@ def transcribe(
                                   beam_size=beam_size)
         
         # print(result)
-        transcribe_results.append({'song_id': song_id,
-                                   'lyric': record.text,
-                                   'inference': result['text']})
+        if use_groundtruth:
+            transcribe_results.append({'song_id': song_id,
+                                       'song_path': record.audio_path,
+                                       'lyric': record.text,
+                                       'inference': result['text']})
+        else:
+            transcribe_results.append({'song_id': song_id,
+                                       'song_path': record.audio_path,
+                                       'inference': result['text']})
 
     return transcribe_results
 
@@ -165,7 +178,8 @@ def main():
                                     records=test_records,
                                     language='zh',
                                     beam_size=args.beam_size,
-                                    is_mixture=args.is_mixture)
+                                    is_mixture=args.is_mixture,
+                                    use_groundtruth=args.use_groundtruth)
     
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     with open(args.output, 'w') as f:

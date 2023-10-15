@@ -95,16 +95,20 @@ python inference_alignment.py \
 
 # Transcript Evaluate
 # Get transcript result first. 
-# It writes the transcription to [output_file_path].
 python inference_transcript.py \
     -f [test_data] \
     --model-dir [model_dir] \
     --output [output_file_path] \
     --device [device_id] \
+    --use-groundtruth
 # Evaluate the inference result file
 python evaluate_transcript.py \
     -f [result_file_path]
 ```
+
+`inference_transcript.py` writes the transcription to `[output_file_path]`. If the flag  `--use-groundtruth` is not set, the output file will not contain the groundtruth information, so you won't be able to evaluate it using `evaluate_transcript.py`.
+
+If your samples in the json file do not have the `lyric` attribute (i.e., when you want to transcribe audios that do not have the groundtruth annotation), then you should not set this flag, as this will result in errors.
 
 ### Inference lyrics alignment without groundtruth
 

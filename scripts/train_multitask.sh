@@ -66,7 +66,8 @@ python inference_transcript.py \
     --test-data ${test_data} \
     --model-dir ${model_dir} \
     --device ${device} \
-    --output ${model_dir}/transcript_result.json
+    --output ${model_dir}/transcript_result.json \
+    --use-groundtruth
 
 python evaluate_transcript.py \
     -f ${model_dir}/transcript_result.json \

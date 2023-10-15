@@ -18,10 +18,6 @@ def perform_viterbi(prediction, labels, hop_size_second=0.02):
     log_prediction = torch.clip(log_prediction, min=-1000)[:,:,1:]
 
     log_silence_prediction = torch.clip(silence_prediction, min=-1000)
-    # print (log_prediction.shape, labels.shape)
-    # print (log_silence_prediction)
-
-    # print (labels)
 
     predicted_onset_offset = []
 
@@ -33,9 +29,6 @@ def perform_viterbi(prediction, labels, hop_size_second=0.02):
 
         backtrace_dp_matrix = np.array([[0 for k in range(len(cur_label) * 2 + 1)] for j in range(log_prediction.shape[1])])
 
-        # dp_path = [[i,] for i in range(len(cur_label) * 2 + 1)]
-        # new_dp_path = [[] for i in range(len(cur_label) * 2 + 1)]
-        # print (time.time())
         cur_log_prediction = log_prediction[i].numpy()
         cur_log_silence_prediction = log_silence_prediction[i].numpy()
 
@@ -55,11 +48,6 @@ def perform_viterbi(prediction, labels, hop_size_second=0.02):
             for j in range(len(dp_matrix)-2, -1, -1):
                 correct_path.append(cur_k)
                 cur_k = backtrace_dp_matrix[j][cur_k]
-                # print (backtrace_dp_matrix[j][cur_k])
-
-
-            # correct_path = dp_path[-1]
-            # print (dp_matrix[-1][-1] / len(correct_path), correct_path)
         else:
 
             correct_path = [len(dp_matrix[0]) - 2, ]
@@ -68,13 +56,8 @@ def perform_viterbi(prediction, labels, hop_size_second=0.02):
             for j in range(len(dp_matrix)-2, -1, -1):
                 correct_path.append(cur_k)
                 cur_k = backtrace_dp_matrix[j][cur_k]
-                # print (backtrace_dp_matrix[j][cur_k])
-
-            # correct_path = dp_path[-2]
-            # print (dp_matrix[-1][-2] / len(correct_path), correct_path)
 
         correct_path.reverse()
-        # print (correct_path)
 
         cur_predicted_onset_offset = []
         cur_pos = 0
@@ -135,7 +118,7 @@ def run_viterbi_core(dp_matrix, backtrace_dp_matrix, cur_log_prediction, cur_log
 
     return dp_matrix, backtrace_dp_matrix
 
-def perform_viterbi_sil(prediction, labels, hop_size_second=0.02):
+def perform_viterbi_ctc(prediction, labels, hop_size_second=0.02):
 
     log_prediction = F.log_softmax(prediction[:,:,1:-1], dim=2)
 
@@ -162,9 +145,6 @@ def perform_viterbi_sil(prediction, labels, hop_size_second=0.02):
 
         backtrace_dp_matrix = np.array([[0 for k in range(len(cur_label) * 2 + 1)] for j in range(log_prediction.shape[1])])
 
-        # dp_path = [[i,] for i in range(len(cur_label) * 2 + 1)]
-        # new_dp_path = [[] for i in range(len(cur_label) * 2 + 1)]
-        # print (time.time())
         cur_log_prediction = log_prediction[i].numpy()
         cur_log_silence_prediction = log_silence_prediction[i].numpy()
 
@@ -184,11 +164,6 @@ def perform_viterbi_sil(prediction, labels, hop_size_second=0.02):
             for j in range(len(dp_matrix)-2, -1, -1):
                 correct_path.append(cur_k)
                 cur_k = backtrace_dp_matrix[j][cur_k]
-                # print (backtrace_dp_matrix[j][cur_k])
-
-
-            # correct_path = dp_path[-1]
-            # print (dp_matrix[-1][-1] / len(correct_path), correct_path)
         else:
 
             correct_path = [len(dp_matrix[0]) - 2, ]
@@ -197,10 +172,6 @@ def perform_viterbi_sil(prediction, labels, hop_size_second=0.02):
             for j in range(len(dp_matrix)-2, -1, -1):
                 correct_path.append(cur_k)
                 cur_k = backtrace_dp_matrix[j][cur_k]
-                # print (backtrace_dp_matrix[j][cur_k])
-
-            # correct_path = dp_path[-2]
-            # print (dp_matrix[-1][-2] / len(correct_path), correct_path)
 
         correct_path.reverse()
         # print (correct_path)
@@ -226,74 +197,3 @@ def get_mae(gt, predict):
 
     error = error / cnt
     return error
-
-def get_pinyin_table(tokenizer):
-    def handle_error(chars):
-        return ['bad', 'bad']
-
-    tokens = tokenizer.convert_ids_to_tokens(np.arange(0, len(tokenizer), 1).astype(int))
-    # print (tokens)
-    token_pinyin = []
-    pinyin_reverse = {}
-    for i in range(len(tokens)):
-        try:
-            cur_pinyin = lazy_pinyin(tokens[i], style=Style.NORMAL, errors=handle_error)
-        except:
-            cur_pinyin = ['bad', 'bad']
-        if len(cur_pinyin) == 1:
-            token_pinyin.append(cur_pinyin[0])
-            if cur_pinyin[0] not in pinyin_reverse.keys():
-                pinyin_reverse[cur_pinyin[0]] = [i,]
-            else:
-                pinyin_reverse[cur_pinyin[0]].append(i)
-        else:
-            token_pinyin.append('bad')
-
-    return token_pinyin, pinyin_reverse
-
-def pypinyin_reweight(
-    logits: torch.Tensor,
-    labels,
-    token_pinyin,
-    pinyin_reverse,
-):
-    pinyin_reverse_keys = list(pinyin_reverse.keys())
-
-    cur_same_pronun_token = []
-    for k in range(len(pinyin_reverse_keys)):
-        cur_same_pronun_token.append(torch.tensor(pinyin_reverse[pinyin_reverse_keys[k]]))
-
-    for i in range(len(logits)):
-
-        effective_pronun = []
-        for k in range(len(labels[i])):
-            # print(labels[i][k])
-            if labels[i][k] == -100:
-                continue
-
-            # print (labels[i][k], token_pinyin[labels[i][k]])
-            try:
-                cur_key = token_pinyin[labels[i][k]]
-                cur_key_index = pinyin_reverse_keys.index(cur_key)
-                if cur_key_index not in effective_pronun:
-                    effective_pronun.append(cur_key_index)
-            except ValueError:
-                print(labels[i][k])
-                print(token_pinyin[labels[i][k]])
-
-        for j in range(len(logits[i])):
-            cur_frame_best = torch.max(logits[i][j])
-            # for k in range(len(pinyin_reverse_keys)):
-            for k in effective_pronun:
-                # selected = torch.index_select(logits[i][j], dim=0, index=cur_same_pronun_token[k])
-                cur_value_list = cur_same_pronun_token[k]
-                selected = logits[i][j][cur_value_list]
-                # print (selected.shape)
-                cur_max = torch.max(selected)
-
-                logits[i][j][cur_value_list] = (cur_max * 4.0 + logits[i][j][cur_value_list]) / 5.0
-
-    return logits
-
-
-        

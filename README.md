@@ -1,26 +1,58 @@
 # Lyric Alignment
-This is a source code of paper "Adapting pretrained speech model for Mandarin lyrics transcription and alignment", you can use this repository to reproduce the experiment in our paper.
 
+This is the official source code of the paper:
+
+Jun-You Wang, Chon-In Leong, Yu-Chen Lin, Li Su and Jyh-Shing Roger Jang, "Adapting pretrained speech model for Mandarin lyrics transcription and alignment," *ASRU 2023*.
+
+You can use this repository to reproduce the experiments in our paper.
+
+This repo also includes the chatacter boundary annotation of a subset of the MIR-1k dataset (see `dataset_preprocessing/`).
 
 ## Install Python Packages
+
 ```bash
 pip install -r requirements.txt 
 ```
 
 ## Usage
+
 ### Data Preparation
+
 Go to `dataset_preprocessing/` to get more information of data preparation.
 
-### Train & evaluate by script
-After you finish data preprocessing, you can run our sample training script `scripts/train_multitask.sh` to train & evaluate the model.
+### Building the pronunciation lookup table
+
+In the lyrics alignment task, we train the model to predict the framewise probability of syllable pronunciation classes instead of character classes.
+
+In practice, we use the `bert-base-chinese` tokenizer to provide the vocabulary of Mandarin characters. Then, we use pypinyin package ([GitHub - mozillazg/python-pinyin: 汉字转拼音(pypinyin)](https://github.com/mozillazg/python-pinyin)) to determine the pronunciation of these Mandarin characters. We build a lookup table that helps us convert between `bert-base-chinese` token ids and syllable pronunciation classes.
+
+The resulted lookup tables are stored in `bert_base_chinese_pronunce_table.json`. FYI, this work was done by simply running `python get_pronunce_table.py`. 
+
+### Train & evaluate all in one script
+
+After data preprocessing, you can run our sample script `scripts/train_multitask.sh` to train & evaluate the model with the default training arguments.
+
 ```bash
-bash scripts/train_multitask.sh [train_data] [dev_data] [test_data] [model_dir]
+bash scripts/train_multitask.sh [train_data] [dev_data] [test_data]\
+ [model_dir] [training_setting]
 ```
-I have also set some training argument in the script, these arguments are the final argument we used in our experiment, you can modify them to get different result. 
+
+where:
+
+`train_data`: Path to the training datasets (json files).
+
+`dev_data`: Path to the dev (validation) datasets (json files).
+
+`test_data`: Path to the test dataset (json file). The test dataset is only used at the evaluation phase.
+
+`model_dir`: The directory to store the model checkpoints and hyperparameters. Need at least 10GB of disk space to store them!
+
+`training_setting`: Choose the preferred training setting. "alignment" will lead to the hyperparameters for lyrics alignment, while "transcription" will lead to the hyperparameters for lyrics transcription. For more details, please refer to our paper.
 
 ### Training
-Excute `train_multitask.py` to train model, don't forget preprocess your data first.
-You can set `--train-alignment` / `--train-transcript` flag to determine which task you want to train. Of course you can set both flags at the same time for multitask training.
+
+Run `train_multitask.py` to train model with customized hyperparameters.
+
 ```bash
 python train_multitask.py \
     --train-data [train_data_1] [train_data_2] ... [train_data_N] \
@@ -31,25 +63,59 @@ python train_multitask.py \
     --use-ctc-loss \
     --save-dir [save_dir]
 ```
+
+where:
+
+`train_data`: Path to the training datasets (json files). Can include multiple datasets. In our experiments, we use 4 versions of the Opencpop dataset (original version and the augmented versions w/ SNR=0, -5, -10) for training.
+
+`dev_data`: Path to the dev (validation) datasets (json files). Can include multiple datasets.
+
+`whisper_pretrained_model`: Specify which pretrained Whisper model to be used as the backbone model. In our experiments, we use Whisper medium (`medium`) as our GPU memory is not very large. If the GPU memory is large enough, perhaps you can try `large`.
+
+`--train-alignment` / `--train-transcript`: Specify which task(s) you want to train on. In our experiments, both flags are set, i.e., both lyrics alignment and lyrics transcription losses are activated.
+
+`--use-ctc-loss`: Set this flag to use the CTC loss for lyrics alignment task.
+
+`save_dir`: The directory to store the model checkpoints and hyperparameters. Need at least 10GB of disk space to store them!
+
 ### Inference & Evaluate
+
 After training finished, you can execute our inference code to evaluate the model performance.
 Or you can [Download our model]() to reproduce the result we mentioned in our paper.
 
 ```bash
 # Alignment Evaluate
-# set `--predict-sil` flag activate if you have used CTC Loss during traing phase.
+# set `--use-ctc-loss` flag if you used CTC Loss during traing phase.
+# This script also computes the MAE metric!
 python inference_alignment.py \
     -f [test_data] \
     --model-dir [model_dir] \
-    --predict-sil  \
+    --use-ctc-loss \
+    --device [device_id] \
 
 # Transcript Evaluate
-# Get transcript result first
+# Get transcript result first. 
+# It writes the transcription to [output_file_path].
 python inference_transcript.py \
     -f [test_data] \
     --model-dir [model_dir] \
-    --output [output_file_path]
+    --output [output_file_path] \
+    --device [device_id] \
 # Evaluate the inference result file
 python evaluate_transcript.py \
     -f [result_file_path]
 ```
+
+### Inference lyrics alignment without groundtruth
+
+The above code for testing lyrics alignment models requires the groundtruth alignment annotation (so it can compute the MAE). If you don't have the groundtruth, run the following code:
+
+
+
+### **Contribution of each author on this repo**
+
+Chon-In Leong (@navi0105) wrote about 80% of the training & evaluation code and the first version of dataset preprocessing code for the Opencpop dataset.
+
+Yu-Chen Lin (@yuchen0515) wrote the code that detects overlapping songs between Opencpop's training set and MIR-1k.
+
+Jun-You Wang (@york135) wrote about 20% of the training & evaluation code and all the remaining code on dataset preprocessing.

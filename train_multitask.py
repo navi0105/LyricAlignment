@@ -48,16 +48,6 @@ def parse_args():
         default='medium'
     )
     parser.add_argument(
-        '--tokenizer',
-        type=str,
-        default='bert-base-chinese'
-    )
-    parser.add_argument(
-        '--language',
-        type=str,
-        default='zh'
-    )
-    parser.add_argument(
         '--train-alignment',
         action='store_true'
     )
@@ -104,6 +94,12 @@ def parse_args():
         '--lr',
         type=float,
         default=5e-3
+    )
+
+    parser.add_argument(
+        '--backbone-lr',
+        type=float,
+        default=5e-6
     )
     parser.add_argument(
         '--max-grad-norm',
@@ -636,30 +632,6 @@ def compute_ctc_loss(
     cur_ctc_loss = F.ctc_loss(output_log_sm, labels, input_lengths, target_length)
     return cur_ctc_loss
 
-def get_pinyin_table(tokenizer):
-    def handle_error(chars):
-        return ['bad', 'bad']
-
-    tokens = tokenizer.convert_ids_to_tokens(np.arange(0, len(tokenizer), 1).astype(int))
-    # print (tokens)
-    token_pinyin = []
-    pinyin_reverse = {}
-    for i in range(len(tokens)):
-        try:
-            cur_pinyin = lazy_pinyin(tokens[i], style=Style.NORMAL, errors=handle_error)
-        except:
-            cur_pinyin = ['bad', 'bad']
-        if len(cur_pinyin) == 1:
-            token_pinyin.append(cur_pinyin[0])
-            if cur_pinyin[0] not in pinyin_reverse.keys():
-                pinyin_reverse[cur_pinyin[0]] = [i,]
-            else:
-                pinyin_reverse[cur_pinyin[0]].append(i)
-        else:
-            token_pinyin.append('bad')
-
-    return token_pinyin, pinyin_reverse
-
 def main():
     args = parse_args()
     set_seed(args.seed)
@@ -674,7 +646,11 @@ def main():
 
     whisper_model = whisper.load_model(args.whisper_model, device=device)
     whisper_tokenizer = get_tokenizer(multilingual=".en" not in args.whisper_model, task="transcribe")
-    hf_tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
+    hf_tokenizer = AutoTokenizer.from_pretrained('bert-base-chinese')
+
+    # Read lookup table
+    with open(f"bert_base_chinese_pronunce_table.json", 'r') as f:
+        token_pinyin, pinyin_reverse, pinyin_lookup_table = json.load(f)
 
     model_args = {'embed_dim': WHISPER_DIM[args.whisper_model],
                   'hidden_dim': 384,
@@ -701,30 +677,24 @@ def main():
 
     with open(f"{args.save_dir}/model_args.json", 'w') as f:
         json.dump(model_args, f, indent=4)
+
+    print ('Fine-tune whisper with lr:', args.lr, args.backbone_lr, 'for', args.train_steps, 'steps')
     
     optimizer = torch.optim.AdamW([{'params': multitask_model.align_rnn.parameters(), 'lr': args.lr,},
-                                    {'params': multitask_model.whisper_model.parameters(), 'lr': args.lr / 1000}],
+                                    {'params': multitask_model.whisper_model.parameters(), 'lr': args.backbone_lr}],
                                     lr=args.lr,
                                     weight_decay=1e-5)
 
-    scheduler = scheduler = get_linear_schedule_with_warmup(
+    scheduler = get_linear_schedule_with_warmup(
         optimizer, num_warmup_steps=args.warmup_steps, num_training_steps=args.train_steps
     )
-
-    token_pinyin, pinyin_reverse = get_pinyin_table(hf_tokenizer)
-
-    pinyin_lookup_table = {}
-    for i in range(len(token_pinyin)):
-        if not token_pinyin[i] in pinyin_lookup_table:
-            pinyin_lookup_table[token_pinyin[i]] = len(pinyin_lookup_table) + 1
-
 
     # assert os.path.exists(args.train_data)
     train_dataloader = get_multitask_dataloader(
         *args.train_data,
         hf_tokenizer=hf_tokenizer,
         whisper_tokenizer=whisper_tokenizer,
-        language=args.language,
+        language='zh',
         is_mixture=args.is_mixture,
         no_timestamps=True,
         use_ctc=args.use_ctc_loss,
@@ -735,7 +705,7 @@ def main():
         *args.dev_data,
         hf_tokenizer=hf_tokenizer,
         whisper_tokenizer=whisper_tokenizer,
-        language=args.language,
+        language='zh',
         is_mixture=args.is_mixture,
         no_timestamps=True,
         use_ctc=args.use_ctc_loss,

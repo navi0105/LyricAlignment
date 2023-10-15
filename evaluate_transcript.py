@@ -1,5 +1,4 @@
 import argparse
-import evaluate
 import os
 import pandas as pd
 import json
@@ -80,20 +79,10 @@ def compute_cer(
         op_count['correct'] += nb_map['C']
     
     print('=' * 30)
-    print(f"{metric_name} (Weighted):", CER_weighted / len(reference))
+    print(f"{metric_name}:", CER_weighted / len(reference))
     print("Wrong Operations:")
     for key, value in op_count.items():
         print(f"{key}: {value}")
-    print('-' * 30)
-    # weighted evaluate
-    if is_per:
-        CER_unweighted = (op_count['substitution'] + op_count['deletion'] + op_count['insertion']) / (op_count['substitution'] + op_count['deletion'] + op_count['correct'])
-    else:
-        metric = evaluate.load("cer")
-        CER_unweighted = metric.compute(references=reference,
-                                    predictions=prediction)
-    
-    print(f"{metric_name} (Unweighted):", CER_unweighted)
     print("=" * 30)
 
 

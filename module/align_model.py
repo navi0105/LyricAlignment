@@ -107,6 +107,7 @@ class AlignModel(torch.nn.Module):
                 align_logit = self.align_rnn(embed)
         else:
             mel = pad_or_trim(mel, N_FRAMES)
+            # print (mel.shape)
             mel = pad_sequence(mel, batch_first=True, padding_value=0)
             embed_pad = self.whisper_model.embed_audio(mel)
             

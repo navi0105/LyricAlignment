@@ -5,10 +5,8 @@ librosa
 torch
 openai-whisper
 transformers
-evaluate
 jiwer
 demucs
-spleeter
 soundfile
 numba
 pypinyin

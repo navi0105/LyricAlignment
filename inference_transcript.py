@@ -36,12 +36,6 @@ def parse_args():
         action='store_true'
     )
     parser.add_argument(
-        "--language",
-        type=str,
-        default='zh',
-        help="Transcribe language"
-    )
-    parser.add_argument(
         '--beam_size',
         type=int,
         default=5
@@ -110,7 +104,7 @@ def load_align_model(
     assert os.path.exists(model_dir)
     with open(os.path.join(model_dir, 'args.json'), 'r') as f:
         train_args = json.load(f)
-    tokenizer_name = train_args['tokenizer']
+    tokenizer_name = 'bert-base-chinese'
     whisper_model_name = train_args['whisper_model']
     model_path = os.path.join(model_dir, 'best_model.pt')
 
@@ -169,7 +163,7 @@ def main():
     
     transcribe_results = transcribe(model=transcribe_model,
                                     records=test_records,
-                                    language=args.language,
+                                    language='zh',
                                     beam_size=args.beam_size,
                                     is_mixture=args.is_mixture)
     

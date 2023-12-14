@@ -81,7 +81,7 @@ where:
 ### Inference & Evaluate
 
 After training finished, you can execute our inference code to evaluate the model performance.
-Or you can [Download our model]() to reproduce the result we mentioned in our paper.
+Or you can [Download our model](https://zenodo.org/records/10373790) to reproduce the result we mentioned in our paper.
 
 ```bash
 # Alignment Evaluate

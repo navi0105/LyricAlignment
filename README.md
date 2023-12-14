@@ -124,9 +124,17 @@ python inference_alignment_nogt.py
 
 The format of `test_data` is the same as in `inference_alignment.py`, but this time, the `on_offset` attribute is not required. On the other hand, `inference_alignment.py` automatically ignores samples that do not have the `on_offset` attribute (in order to handle `MIR1k_partial_align.json`).
 
+## Some additional experiment results
 
+Due to the page limit, we didn't put all the results to the paper. Here are some of them:
 
-### **Contribution of each author on this repo**
+**MIR-1k** ALT result, w/ proposed method (the results we reported in the paper): **CER**=17.8%, **PER**=9.6%
+
+**MIR-1k vocal** ALT result, w/ proposed method (only use vocal stems, can be viewed as using an oracle MSS model): **CER**=9.1%, **PER**=3.6%
+
+More to come......
+
+## **Contribution of each author on this repo**
 
 Chon-In Leong (@navi0105) wrote about 80% of the training & evaluation code and the first version of dataset preprocessing code for the Opencpop dataset.
 

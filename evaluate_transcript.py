@@ -6,7 +6,7 @@ from typing import List
 from tqdm import tqdm
 
 from utils.CER import CER, PER
-
+import chinese_converter
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -60,6 +60,12 @@ def compute_cer(
     for ref, pred in tqdm(zip(reference, prediction)):
         # Remove All English Characters
         pred = remove_english(pred)
+        pred = pred.replace(' ', '').replace('.', '')
+        pred = chinese_converter.to_simplified(pred)
+
+        ref = remove_english(ref)
+        ref = ref.replace(' ', '').replace('.', '')
+        ref = chinese_converter.to_simplified(ref)
 
         if is_per:
             cer, nb_map = PER(hypothesis=pred,
